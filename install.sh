@@ -193,3 +193,5 @@ else
         echo -e "${CYAN}terminusai${NC}"
     fi
 fi
+# Missing closing fi for the outer if block - ADD THIS:
+fi
