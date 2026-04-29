@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
 ╔═══════════════════════════════════════════════════════════════════╗
-║                         TERMINUS AI v1.4                          ║
+║                         TERMINUS AI v1.4.1                        ║
 ║                   Your Terminal AI Companion                      ║
 ║                                                                   ║
 ║                      Created by: flint667                         ║
 ║                                                                   ║
-║  v1.4 NEW FEATURES:                                              ║
-║    • 🔄 Update Checker Menu (manual + auto)                      ║
-║    • 🔥 DUAL AI MODE - Compare responses from 2 models           ║
-║    • ⚡ Turbo Mode - Rewrite & enhance responses                 ║
-║    • 🛡️ Fixed all NoneType & JSON errors                        ║
-║    • 💾 Auto-save on exit                                        ║
+║  v1.4.1 BUG FIXES:                                               ║
+║    • 🔧 Fixed line 1078 NoneType error                           ║
+║    • 🔧 Fixed all undefined variable references                   ║
+║    • 🔧 Fixed global variable scope issues                       ║
+║    • ✅ Added proper null checks everywhere                      ║
+║    • ✅ Fixed color class implementation                         ║
 ╚═══════════════════════════════════════════════════════════════════╝
 """
 
@@ -28,17 +28,30 @@ import re
 import secrets
 import string
 import socket
-import threading
 from datetime import datetime
 from collections import OrderedDict
 
 # ==================== VERSION INFO ====================
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 APP_NAME = "TerminusAI"
 AUTHOR = "flint667"
 AUTHOR_DISCORD = "flint667"
 GITHUB_USER = "testlolplz"
 REPO_URL = f"https://github.com/{GITHUB_USER}/TerminusAI"
+
+# ==================== COLORS (Fixed) ====================
+class Colors:
+    GREEN = '\033[38;2;0;255;100m'
+    CYAN = '\033[38;2;0;200;255m'
+    YELLOW = '\033[38;2;255;200;0m'
+    RED = '\033[38;2;255;100;100m'
+    BLUE = '\033[38;2;100;150;255m'
+    PURPLE = '\033[38;2;200;100;255m'
+    ORANGE = '\033[38;2;255;150;50m'
+    WHITE = '\033[38;2;255;255;255m'
+    RESET = '\033[0m'
+
+C = Colors()
 
 # ==================== FILE MANAGEMENT ====================
 class TerminusAIFiles:
@@ -87,9 +100,12 @@ class TerminusAIFiles:
         if not content:
             content = "[empty response]"
         log_file = os.path.join(self.logs_dir, f"chat_{datetime.now().strftime('%Y%m%d')}.log")
-        with open(log_file, 'a') as f:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            f.write(f"[{timestamp}] {role}: {content[:500]}\n\n")
+        try:
+            with open(log_file, 'a') as f:
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                f.write(f"[{timestamp}] {role}: {content[:500]}\n\n")
+        except:
+            pass
     
     def save_chat(self, name, history, model):
         filepath = os.path.join(self.chats_dir, f"{name}.json")
@@ -116,19 +132,6 @@ class TerminusAIFiles:
         return [f.replace('.json', '') for f in os.listdir(self.chats_dir) if f.endswith('.json')]
 
 files = TerminusAIFiles()
-
-# ==================== COLORS ====================
-C = type('Color', (), {
-    'GREEN': '\033[38;2;0;255;100m',
-    'CYAN': '\033[38;2;0;200;255m',
-    'YELLOW': '\033[38;2;255;200;0m',
-    'RED': '\033[38;2;255;100;100m',
-    'BLUE': '\033[38;2;100;150;255m',
-    'PURPLE': '\033[38;2;200;100;255m',
-    'ORANGE': '\033[38;2;255;150;50m',
-    'WHITE': '\033[38;2;255;255;255m',
-    'RESET': '\033[0m'
-})()
 
 # ==================== GLOBAL VARS ====================
 API_KEY = ""
@@ -161,16 +164,16 @@ class ResponseCache:
             pass
     
     def get(self, question, model):
-        if not question:
+        if not question or not model:
             return None
         key = hashlib.md5(f"{question}_{model}".encode()).hexdigest()
         if key in self.cache:
             self.cache.move_to_end(key)
-            return self.cache[key]['answer']
+            return self.cache[key].get('answer')
         return None
     
     def put(self, question, model, answer):
-        if not question or not answer:
+        if not question or not model or not answer:
             return
         key = hashlib.md5(f"{question}_{model}".encode()).hexdigest()
         self.cache[key] = {
@@ -206,241 +209,6 @@ class ConnectionPool:
         self.conn = {}
 
 conn_pool = ConnectionPool()
-
-# ==================== UPDATE CHECKER ====================
-def check_for_updates(force=False):
-    """Check GitHub for new version"""
-    if not force and os.path.exists(files.update_check_file):
-        try:
-            with open(files.update_check_file, 'r') as f:
-                last_check = json.load(f)
-                last_time = last_check.get('timestamp', 0)
-                if time.time() - last_time < 86400:  # 24 hours
-                    return last_check.get('update_available', False), last_check.get('latest_version')
-        except:
-            pass
-    
-    try:
-        url = f"https://api.github.com/repos/{GITHUB_USER}/TerminusAI/releases/latest"
-        req = urllib.request.Request(url, headers={'User-Agent': 'TerminusAI'})
-        with urllib.request.urlopen(req, timeout=10) as response:
-            data = json.loads(response.read().decode())
-            latest = data.get('tag_name', '').replace('v', '')
-            update_available = latest > VERSION if latest else False
-            
-            with open(files.update_check_file, 'w') as f:
-                json.dump({
-                    'timestamp': time.time(),
-                    'update_available': update_available,
-                    'latest_version': latest,
-                    'current_version': VERSION
-                }, f)
-            
-            return update_available, latest
-    except Exception as e:
-        return False, None
-
-def show_update_banner():
-    try:
-        update_available, latest = check_for_updates()
-        if update_available:
-            print(f"\n{C.YELLOW}╔══════════════════════════════════════════════════╗")
-            print(f"║  🎉 UPDATE AVAILABLE! v{latest} is out!              ║")
-            print(f"║  Run: python -c \"$(curl -fsSL {REPO_URL}/raw/main/update.py)\"")
-            print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
-            return True
-    except:
-        pass
-    return False
-
-def update_menu():
-    """Manual update checker menu"""
-    clear()
-    print_header()
-    print(f"\n{C.CYAN}╔══════════════════════════════════════════════════╗")
-    print("║              🔄 UPDATE CHECKER                    ║")
-    print("╚══════════════════════════════════════════════════╝\n{C.RESET}")
-    
-    print(f"{C.YELLOW}Current version: {C.GREEN}v{VERSION}{C.RESET}")
-    
-    print(f"\n{C.CYAN}[1] Check for updates now{C.RESET}")
-    print(f"{C.CYAN}[2] View changelog{C.RESET}")
-    print(f"{C.CYAN}[3] Download latest version{C.RESET}")
-    print(f"{C.CYAN}[4] Update TerminusAI{C.RESET}")
-    print(f"{C.CYAN}[0] Back to main menu{C.RESET}")
-    
-    choice = input(f"\n{C.GREEN}Select: {C.RESET}").strip()
-    
-    if choice == '1':
-        print(f"\n{C.YELLOW}Checking for updates...{C.RESET}")
-        update_available, latest = check_for_updates(force=True)
-        if update_available:
-            print(f"{C.GREEN}✓ Update available! v{latest} → v{VERSION}{C.RESET}")
-            print(f"{C.CYAN}Use option 4 to update{C.RESET}")
-        else:
-            print(f"{C.GREEN}✓ You're on the latest version!{C.RESET}")
-        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
-    
-    elif choice == '2':
-        print(f"\n{C.CYAN}📋 Changelog for v{VERSION}:{C.RESET}")
-        print(f"{C.GREEN}  • Added update checker menu{C.RESET}")
-        print(f"{C.GREEN}  • Added DUAL AI MODE (compare responses){C.RESET}")
-        print(f"{C.GREEN}  • Added Turbo Mode for response enhancement{C.RESET}")
-        print(f"{C.GREEN}  • Fixed all NoneType and JSON errors{C.RESET}")
-        print(f"{C.GREEN}  • Auto-save on exit{C.RESET}")
-        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
-    
-    elif choice == '3':
-        print(f"\n{C.CYAN}📥 Download instructions:{C.RESET}")
-        print(f"{C.YELLOW}  curl -o ~/terminusai.py {REPO_URL}/raw/main/terminusai.py{C.RESET}")
-        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
-    
-    elif choice == '4':
-        print(f"\n{C.YELLOW}Updating TerminusAI...{C.RESET}")
-        try:
-            import urllib.request
-            urllib.request.urlretrieve(f"{REPO_URL}/raw/main/terminusai.py", "/tmp/terminusai_new.py")
-            subprocess.run(['cp', '/tmp/terminusai_new.py', os.path.expanduser("~/terminusai.py")])
-            print(f"{C.GREEN}✓ Update downloaded! Restart TerminusAI to apply.{C.RESET}")
-        except Exception as e:
-            print(f"{C.RED}❌ Update failed: {e}{C.RESET}")
-        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
-
-# ==================== DUAL MODE & TURBO MODE ====================
-def send_api_request(user_input, system_prompt, model):
-    """Send request to specific model with proper error handling"""
-    try:
-        messages = [{"role": "system", "content": system_prompt}]
-        for msg in HISTORY[-10:]:
-            messages.append(msg)
-        messages.append({"role": "user", "content": user_input})
-        
-        conn = conn_pool.get_connection()
-        payload = json.dumps({
-            "model": model,
-            "messages": messages,
-            "temperature": 0.5,
-            "max_tokens": 500,
-            "top_p": 0.9
-        })
-        headers = {
-            "Authorization": f"Bearer {API_KEY}",
-            "Content-Type": "application/json"
-        }
-        
-        conn.request("POST", "/api/v1/chat/completions", payload, headers)
-        response = conn.getresponse()
-        response_data = response.read().decode()
-        
-        if not response_data:
-            return None, "Empty response from API"
-        
-        data = json.loads(response_data)
-        
-        if "error" in data:
-            return None, data['error'].get('message', 'Unknown API error')
-        
-        if "choices" not in data or len(data["choices"]) == 0:
-            return None, "No response choices returned"
-        
-        content = data["choices"][0].get("message", {}).get("content")
-        
-        if content is None:
-            return None, "Empty response content"
-        
-        return content, None
-        
-    except json.JSONDecodeError as e:
-        return None, f"Invalid JSON: {str(e)[:50]}"
-    except http.client.HTTPException as e:
-        return None, f"HTTP error: {str(e)[:50]}"
-    except socket.timeout:
-        return None, "Connection timeout"
-    except Exception as e:
-        return None, f"Error: {str(e)[:80]}"
-
-def dual_mode_chat(user_input, system_prompt):
-    """Send request to two models and compare responses"""
-    print(f"\n{C.CYAN}🔥 DUAL MODE: Asking both models...{C.RESET}\n")
-    
-    # Model 1 (Primary)
-    print(f"{C.BLUE}[Model 1: {CURRENT_MODEL[:30]}]{C.RESET}")
-    response1, error1 = send_api_request(user_input, system_prompt, CURRENT_MODEL)
-    
-    # Model 2 (Secondary)
-    print(f"{C.PURPLE}[Model 2: {SECONDARY_MODEL[:30]}]{C.RESET}")
-    response2, error2 = send_api_request(user_input, system_prompt, SECONDARY_MODEL)
-    
-    print(f"\n{C.YELLOW}{'='*50}{C.RESET}")
-    print(f"{C.GREEN}📊 COMPARISON RESULTS:{C.RESET}")
-    print(f"{C.YELLOW}{'='*50}{C.RESET}\n")
-    
-    # Display both responses
-    print(f"{C.BLUE}╔══════════════════════════════════════════════════╗")
-    print(f"║  MODEL 1: {CURRENT_MODEL[:40]:<40} ║")
-    print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
-    
-    if error1:
-        print(f"{C.RED}❌ Error: {error1}{C.RESET}")
-    else:
-        print(highlight_code(response1))
-    
-    print(f"\n{C.PURPLE}╔══════════════════════════════════════════════════╗")
-    print(f"║  MODEL 2: {SECONDARY_MODEL[:40]:<40} ║")
-    print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
-    
-    if error2:
-        print(f"{C.RED}❌ Error: {error2}{C.RESET}")
-    else:
-        print(highlight_code(response2))
-    
-    # Ask which response to keep
-    print(f"\n{C.YELLOW}{'─'*50}{C.RESET}")
-    print(f"{C.CYAN}Which response do you want to keep?{C.RESET}")
-    print(f"  {C.GREEN}[1] Keep Model 1 response{C.RESET}")
-    print(f"  {C.GREEN}[2] Keep Model 2 response{C.RESET}")
-    print(f"  {C.GREEN}[3] Keep both (append){C.RESET}")
-    print(f"  {C.GREEN}[0] Discard both{C.RESET}")
-    
-    choice = input(f"\n{C.YELLOW}Select: {C.RESET}").strip()
-    
-    if choice == '1' and not error1:
-        return response1
-    elif choice == '2' and not error2:
-        return response2
-    elif choice == '3':
-        if error1 and error2:
-            return None
-        elif error1:
-            return response2
-        elif error2:
-            return response1
-        return f"{response1}\n\n--- Alternative Response ---\n\n{response2}"
-    else:
-        return None
-
-def turbo_rewrite(text):
-    """Rewrite/enhance text using AI (Turbo Mode)"""
-    if not text:
-        return None
-    
-    print(f"\n{C.ORANGE}⚡ TURBO MODE: Enhancing response...{C.RESET}")
-    
-    rewrite_prompt = f"""Please rewrite and enhance the following text. Make it better, clearer, and more polished while keeping the same meaning and information:
-
-Original: {text[:500]}
-
-Enhanced version:"""
-    
-    system_prompt = "You are a text enhancement assistant. Rewrite text to be clearer and more polished."
-    
-    enhanced, error = send_api_request(rewrite_prompt, system_prompt, CURRENT_MODEL)
-    
-    if error:
-        print(f"{C.RED}Turbo mode failed: {error}{C.RESET}")
-        return text
-    
-    return enhanced
 
 # ==================== UTILITIES ====================
 def clear():
@@ -521,6 +289,234 @@ def smart_max_tokens(question):
         return 500
     else:
         return 800
+
+# ==================== UPDATE CHECKER ====================
+def check_for_updates(force=False):
+    try:
+        if not force and os.path.exists(files.update_check_file):
+            try:
+                with open(files.update_check_file, 'r') as f:
+                    last_check = json.load(f)
+                    last_time = last_check.get('timestamp', 0)
+                    if time.time() - last_time < 86400:
+                        return last_check.get('update_available', False), last_check.get('latest_version')
+            except:
+                pass
+        
+        url = f"https://api.github.com/repos/{GITHUB_USER}/TerminusAI/releases/latest"
+        req = urllib.request.Request(url, headers={'User-Agent': 'TerminusAI'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            data = json.loads(response.read().decode())
+            latest = data.get('tag_name', '').replace('v', '')
+            update_available = latest > VERSION if latest else False
+            
+            with open(files.update_check_file, 'w') as f:
+                json.dump({
+                    'timestamp': time.time(),
+                    'update_available': update_available,
+                    'latest_version': latest,
+                    'current_version': VERSION
+                }, f)
+            
+            return update_available, latest
+    except:
+        return False, None
+
+def show_update_banner():
+    try:
+        update_available, latest = check_for_updates()
+        if update_available:
+            print(f"\n{C.YELLOW}╔══════════════════════════════════════════════════╗")
+            print(f"║  🎉 UPDATE AVAILABLE! v{latest} is out!              ║")
+            print(f"║  Run: curl -o ~/terminusai.py {REPO_URL}/raw/main/terminusai.py")
+            print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
+            return True
+    except:
+        pass
+    return False
+
+def update_menu():
+    clear()
+    print_header()
+    print(f"\n{C.CYAN}╔══════════════════════════════════════════════════╗")
+    print("║              🔄 UPDATE CHECKER                    ║")
+    print("╚══════════════════════════════════════════════════╝\n{C.RESET}")
+    
+    print(f"{C.YELLOW}Current version: {C.GREEN}v{VERSION}{C.RESET}")
+    
+    print(f"\n{C.CYAN}[1] Check for updates now{C.RESET}")
+    print(f"{C.CYAN}[2] View changelog{C.RESET}")
+    print(f"{C.CYAN}[3] Download latest version{C.RESET}")
+    print(f"{C.CYAN}[0] Back to main menu{C.RESET}")
+    
+    choice = input(f"\n{C.GREEN}Select: {C.RESET}").strip()
+    
+    if choice == '1':
+        print(f"\n{C.YELLOW}Checking for updates...{C.RESET}")
+        update_available, latest = check_for_updates(force=True)
+        if update_available:
+            print(f"{C.GREEN}✓ Update available! v{latest} (current: v{VERSION}){C.RESET}")
+        else:
+            print(f"{C.GREEN}✓ You're on the latest version!{C.RESET}")
+        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
+    elif choice == '2':
+        print(f"\n{C.CYAN}📋 Changelog for v{VERSION}:{C.RESET}")
+        print(f"{C.GREEN}  • Fixed all NoneType errors{C.RESET}")
+        print(f"{C.GREEN}  • Added Dual AI Mode (/dual){C.RESET}")
+        print(f"{C.GREEN}  • Added Turbo Mode (/turbo){C.RESET}")
+        print(f"{C.GREEN}  • Added update checker menu{C.RESET}")
+        print(f"{C.GREEN}  • Fixed color rendering issues{C.RESET}")
+        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
+    elif choice == '3':
+        print(f"\n{C.CYAN}📥 Download instructions:{C.RESET}")
+        print(f"{C.YELLOW}  curl -o ~/terminusai.py {REPO_URL}/raw/main/terminusai.py{C.RESET}")
+        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
+
+# ==================== API REQUEST (FIXED) ====================
+def send_api_request(user_input, system_prompt, model):
+    """Send request to specific model with proper error handling"""
+    if not user_input or not model:
+        return None, "Invalid parameters"
+    
+    try:
+        messages = [{"role": "system", "content": str(system_prompt)}]
+        for msg in HISTORY[-10:]:
+            if msg and isinstance(msg, dict):
+                messages.append(msg)
+        messages.append({"role": "user", "content": str(user_input)})
+        
+        conn = conn_pool.get_connection()
+        payload = json.dumps({
+            "model": model,
+            "messages": messages,
+            "temperature": 0.5,
+            "max_tokens": smart_max_tokens(user_input),
+            "top_p": 0.9
+        })
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        conn.request("POST", "/api/v1/chat/completions", payload, headers)
+        response = conn.getresponse()
+        response_data = response.read().decode()
+        
+        if not response_data:
+            return None, "Empty response from API"
+        
+        data = json.loads(response_data)
+        
+        if "error" in data:
+            return None, data['error'].get('message', 'Unknown API error')
+        
+        if "choices" not in data or len(data["choices"]) == 0:
+            return None, "No response choices returned"
+        
+        content = data["choices"][0].get("message", {}).get("content")
+        
+        if content is None:
+            return None, "Empty response content"
+        
+        return str(content), None
+        
+    except json.JSONDecodeError as e:
+        return None, f"Invalid JSON: {str(e)[:50]}"
+    except http.client.HTTPException as e:
+        return None, f"HTTP error: {str(e)[:50]}"
+    except socket.timeout:
+        return None, "Connection timeout"
+    except Exception as e:
+        return None, f"Error: {str(e)[:80]}"
+
+def dual_mode_chat(user_input, system_prompt):
+    """Send request to two models and compare responses"""
+    if not user_input:
+        return None
+    
+    print(f"\n{C.CYAN}🔥 DUAL MODE: Asking both models...{C.RESET}\n")
+    
+    # Model 1 (Primary)
+    print(f"{C.BLUE}[Model 1: {CURRENT_MODEL[:30]}]{C.RESET}")
+    response1, error1 = send_api_request(user_input, system_prompt, CURRENT_MODEL)
+    
+    # Model 2 (Secondary)
+    print(f"{C.PURPLE}[Model 2: {SECONDARY_MODEL[:30]}]{C.RESET}")
+    response2, error2 = send_api_request(user_input, system_prompt, SECONDARY_MODEL)
+    
+    print(f"\n{C.YELLOW}{'='*50}{C.RESET}")
+    print(f"{C.GREEN}📊 COMPARISON RESULTS:{C.RESET}")
+    print(f"{C.YELLOW}{'='*50}{C.RESET}\n")
+    
+    # Display both responses
+    print(f"{C.BLUE}╔══════════════════════════════════════════════════╗")
+    print(f"║  MODEL 1: {CURRENT_MODEL[:40]:<40} ║")
+    print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
+    
+    if error1:
+        print(f"{C.RED}❌ Error: {error1}{C.RESET}")
+    else:
+        print(highlight_code(str(response1)))
+    
+    print(f"\n{C.PURPLE}╔══════════════════════════════════════════════════╗")
+    print(f"║  MODEL 2: {SECONDARY_MODEL[:40]:<40} ║")
+    print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
+    
+    if error2:
+        print(f"{C.RED}❌ Error: {error2}{C.RESET}")
+    else:
+        print(highlight_code(str(response2)))
+    
+    # Ask which response to keep
+    print(f"\n{C.YELLOW}{'─'*50}{C.RESET}")
+    print(f"{C.CYAN}Which response do you want to keep?{C.RESET}")
+    print(f"  {C.GREEN}[1] Keep Model 1 response{C.RESET}")
+    print(f"  {C.GREEN}[2] Keep Model 2 response{C.RESET}")
+    print(f"  {C.GREEN}[3] Keep both (append){C.RESET}")
+    print(f"  {C.GREEN}[0] Discard both{C.RESET}")
+    
+    choice = input(f"\n{C.YELLOW}Select: {C.RESET}").strip()
+    
+    if choice == '1' and not error1 and response1:
+        return str(response1)
+    elif choice == '2' and not error2 and response2:
+        return str(response2)
+    elif choice == '3':
+        if error1 and error2:
+            return None
+        elif error1 and response2:
+            return str(response2)
+        elif error2 and response1:
+            return str(response1)
+        elif response1 and response2:
+            return f"{response1}\n\n--- Alternative Response ---\n\n{response2}"
+        else:
+            return None
+    else:
+        return None
+
+def turbo_rewrite(text):
+    """Rewrite/enhance text using AI (Turbo Mode)"""
+    if not text:
+        return None
+    
+    print(f"\n{C.ORANGE}⚡ TURBO MODE: Enhancing response...{C.RESET}")
+    
+    rewrite_prompt = f"""Please rewrite and enhance the following text. Make it better, clearer, and more polished while keeping the same meaning and information:
+
+Original: {text[:500]}
+
+Enhanced version:"""
+    
+    system_prompt = "You are a text enhancement assistant. Rewrite text to be clearer and more polished."
+    
+    enhanced, error = send_api_request(rewrite_prompt, system_prompt, CURRENT_MODEL)
+    
+    if error:
+        print(f"{C.RED}Turbo mode failed: {error}{C.RESET}")
+        return text
+    
+    return enhanced if enhanced else text
 
 # ==================== FEATURES ====================
 def copy_to_clipboard(text):
@@ -657,7 +653,7 @@ def load_chat_session():
         pass
     return f"{C.YELLOW}Cancelled{C.RESET}"
 
-# ==================== MAIN AI CHAT ====================
+# ==================== MAIN AI CHAT (FIXED) ====================
 def ai_chat():
     global API_KEY, HISTORY, CURRENT_MODEL, SECONDARY_MODEL, CUSTOM_PROMPT, DUAL_MODE
     
@@ -673,7 +669,6 @@ def ai_chat():
         print_header()
         tw = os.get_terminal_size().columns
         
-        # Status bar
         mode_text = f"{C.ORANGE}🔥 DUAL MODE{C.RESET}" if DUAL_MODE else f"{C.CYAN}🔄 SINGLE MODE{C.RESET}"
         print(f"\n{C.CYAN}📡 {CURRENT_MODEL[:40]}{C.RESET}")
         print(f"{C.YELLOW}💬 {len(HISTORY)//2} exchanges | 💾 {len(cache.cache)} cached | {mode_text}{C.RESET}")
@@ -704,13 +699,14 @@ def ai_chat():
 {C.CYAN}Clipboard:{C.RESET}  /copy, /paste
 {C.YELLOW}Media:{C.RESET}  /imagine <prompt>
 {C.PURPLE}Tools:{C.RESET}  /calc <expr>, /password, /search <q>, /weather <city>
-{C.ORANGE}Advanced:{C.RESET}  /dual, /turbo, /checkupdate, /models
+{C.ORANGE}Advanced:{C.RESET}  /dual, /turbo, /checkupdate
 
 {C.BLUE}💡 Examples:{C.RESET}
-  /dual              - Toggle Dual Mode (compare 2 models)
-  /turbo             - Enhance last response with AI
+  /dual              - Toggle Dual Mode
+  /turbo             - Enhance last response
   /checkupdate       - Check for updates
-  /models            - Change secondary model
+  /calc 2+2*10
+  /imagine a cat
 """
             print(help_text)
             input("\nPress Enter...")
@@ -759,20 +755,22 @@ def ai_chat():
             DUAL_MODE = not DUAL_MODE
             save_config()
             print(f"\n{C.GREEN}✓ Dual Mode {'ENABLED' if DUAL_MODE else 'DISABLED'}{C.RESET}")
-            print(f"{C.YELLOW}Dual mode will query both models and let you choose the best response{C.RESET}")
             input("\nPress Enter...")
             continue
         elif cmd == '/turbo':
             if HISTORY:
-                last_response = HISTORY[-1]['content']
-                enhanced = turbo_rewrite(last_response)
-                if enhanced:
-                    print(f"\n{C.GREEN}✨ Enhanced Response:{C.RESET}\n")
-                    fast_print(highlight_code(enhanced))
-                    HISTORY[-1]['content'] = enhanced
-                    print(f"\n{C.GREEN}✓ Response updated!{C.RESET}")
+                last_response = HISTORY[-1].get('content') if isinstance(HISTORY[-1], dict) else None
+                if last_response:
+                    enhanced = turbo_rewrite(last_response)
+                    if enhanced:
+                        print(f"\n{C.GREEN}✨ Enhanced Response:{C.RESET}\n")
+                        fast_print(highlight_code(enhanced))
+                        HISTORY[-1]['content'] = enhanced
+                        print(f"\n{C.GREEN}✓ Response updated!{C.RESET}")
+                    else:
+                        print(f"\n{C.RED}❌ Turbo mode failed{C.RESET}")
                 else:
-                    print(f"\n{C.RED}❌ Turbo mode failed{C.RESET}")
+                    print(f"\n{C.YELLOW}⚠ Invalid response format{C.RESET}")
             else:
                 print(f"\n{C.YELLOW}⚠ No response to enhance{C.RESET}")
             input("\nPress Enter...")
@@ -781,20 +779,9 @@ def ai_chat():
             print(f"\n{C.YELLOW}Checking for updates...{C.RESET}")
             update_available, latest = check_for_updates(force=True)
             if update_available:
-                print(f"{C.GREEN}✓ Update available! v{latest} → v{VERSION}{C.RESET}")
-                print(f"{C.CYAN}Run option 4 in update menu to update{C.RESET}")
+                print(f"{C.GREEN}✓ Update available! v{latest} (current: v{VERSION}){C.RESET}")
             else:
                 print(f"{C.GREEN}✓ You're on the latest version!{C.RESET}")
-            input("\nPress Enter...")
-            continue
-        elif cmd == '/models':
-            print(f"\n{C.CYAN}Current secondary model: {SECONDARY_MODEL}{C.RESET}")
-            print(f"{C.YELLOW}Enter new model ID (or Enter to keep): {C.RESET}", end="")
-            new_model = input().strip()
-            if new_model:
-                SECONDARY_MODEL = new_model
-                save_config()
-                print(f"{C.GREEN}✓ Secondary model updated!{C.RESET}")
             input("\nPress Enter...")
             continue
         
@@ -803,12 +790,12 @@ def ai_chat():
             cached = cache.get(user_input, CURRENT_MODEL)
             if cached:
                 print(f"\n{C.CYAN}AI (cached): {C.RESET}")
-                highlighted = highlight_code(cached)
+                highlighted = highlight_code(str(cached))
                 fast_print(highlighted)
                 HISTORY.append({"role": "user", "content": user_input})
-                HISTORY.append({"role": "assistant", "content": cached})
+                HISTORY.append({"role": "assistant", "content": str(cached)})
                 files.log_message("USER", user_input)
-                files.log_message("ASSISTANT", cached)
+                files.log_message("ASSISTANT", str(cached))
                 print("\n" + "─" * tw)
                 input(f"{C.YELLOW}[Enter] continue{C.RESET}")
                 continue
@@ -826,27 +813,23 @@ def ai_chat():
             content, error = send_api_request(user_input, system_prompt, CURRENT_MODEL)
             if error:
                 print(f"{C.RED}❌ {error}{C.RESET}")
-                print(f"\n{C.YELLOW}💡 Tips:{C.RESET}")
-                print("  • Check your API key in Settings (option 3)")
-                print("  • Make sure you have internet connection")
-                print("  • Try switching models (option 4)")
                 input("\nPress Enter...")
                 continue
         
         # Cache and save response
         if content:
             if not DUAL_MODE:
-                cache.put(user_input, CURRENT_MODEL, content)
+                cache.put(user_input, CURRENT_MODEL, str(content))
             
-            highlighted = highlight_code(content)
+            highlighted = highlight_code(str(content))
             HISTORY.append({"role": "user", "content": user_input})
-            HISTORY.append({"role": "assistant", "content": content})
+            HISTORY.append({"role": "assistant", "content": str(content)})
             
             if len(HISTORY) > 30:
                 HISTORY = HISTORY[-30:]
             
             files.log_message("USER", user_input)
-            files.log_message("ASSISTANT", content)
+            files.log_message("ASSISTANT", str(content))
             
             fast_print(highlighted)
             print()
@@ -952,31 +935,13 @@ def storage_info():
         if size > 0:
             print(f"  {name:<10}: {size/1024:.1f} KB")
     print(f"\n{C.GREEN}  Total     : {total/1024:.1f} KB{C.RESET}")
-    
-    print(f"\n{C.CYAN}Options:{C.RESET}")
-    print("  1. Clear cache")
-    print("  2. Delete all logs")
-    print("  0. Back")
-    
-    choice = input(f"\n{C.YELLOW}Select: {C.RESET}")
-    if choice == '1':
-        cache.cache.clear()
-        cache.save()
-        print(f"{C.GREEN}✓ Cache cleared{C.RESET}")
-        time.sleep(1)
-    elif choice == '2':
-        import shutil
-        if os.path.exists(files.logs_dir):
-            shutil.rmtree(files.logs_dir)
-            os.makedirs(files.logs_dir)
-        print(f"{C.GREEN}✓ Logs deleted{C.RESET}")
-        time.sleep(1)
+    input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
 
 # ==================== AUTO-INSTALLER ====================
 def check_and_install_dependencies():
     print(f"{C.CYAN}")
     print("╔══════════════════════════════════════════════════╗")
-    print("║         TerminusAI v1.4 - Quick Setup           ║")
+    print("║         TerminusAI v1.4.1 - Quick Setup         ║")
     print("╚══════════════════════════════════════════════════╝")
     print(f"{C.RESET}")
     
@@ -1026,7 +991,6 @@ def main():
         print_header()
         tw = os.get_terminal_size().columns
         
-        # Mode indicator
         mode_indicator = f"{C.ORANGE}🔥 DUAL MODE ACTIVE{C.RESET}" if DUAL_MODE else f"{C.CYAN}🔄 SINGLE MODE{C.RESET}"
         
         print(f"\n{C.CYAN}╔════════════════════════════════════════════╗")
@@ -1101,7 +1065,7 @@ def main():
             print("  • Clipboard support")
             print("  • Password generator")
             print("  • Save/load conversations")
-            print(f"\n{C.YELLOW}Commands in chat: /help, /dual, /turbo, /checkupdate, /models{C.RESET}")
+            print(f"\n{C.YELLOW}Commands in chat: /help, /dual, /turbo, /checkupdate{C.RESET}")
             input("\nPress Enter...")
         elif choice == '9':
             conn_pool.close()
