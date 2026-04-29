@@ -1,1 +1,0 @@
-A powerful AI assistant for Termux bringing Large Language Models to Android terminals. Free, open-source, and feature-rich with code execution, web search, file management, and 25+ commands.
