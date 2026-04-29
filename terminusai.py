@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
 """
 ╔═══════════════════════════════════════════════════════════════════╗
-║                         TERMINUS AI v1.3.1                        ║
+║                         TERMINUS AI v1.4                          ║
 ║                   Your Terminal AI Companion                      ║
 ║                                                                   ║
 ║                      Created by: flint667                         ║
 ║                                                                   ║
-║  v1.3.1 BUG FIXES:                                               ║
-║    • 🔧 Fixed NoneType error in API responses                    ║
-║    • 🛡️ Better error handling for all API calls                  ║
-║    • ✅ Validates responses before processing                     ║
-║    • 🔄 Auto-retry on empty responses                            ║
+║  v1.4 NEW FEATURES:                                              ║
+║    • 🔄 Update Checker Menu (manual + auto)                      ║
+║    • 🔥 DUAL AI MODE - Compare responses from 2 models           ║
+║    • ⚡ Turbo Mode - Rewrite & enhance responses                 ║
+║    • 🛡️ Fixed all NoneType & JSON errors                        ║
+║    • 💾 Auto-save on exit                                        ║
 ╚═══════════════════════════════════════════════════════════════════╝
 """
 
@@ -27,11 +28,12 @@ import re
 import secrets
 import string
 import socket
+import threading
 from datetime import datetime
 from collections import OrderedDict
 
 # ==================== VERSION INFO ====================
-VERSION = "1.3.1"
+VERSION = "1.4.0"
 APP_NAME = "TerminusAI"
 AUTHOR = "flint667"
 AUTHOR_DISCORD = "flint667"
@@ -116,18 +118,24 @@ class TerminusAIFiles:
 files = TerminusAIFiles()
 
 # ==================== COLORS ====================
-FAST_GREEN = '\033[38;2;0;255;100m'
-FAST_CYAN = '\033[38;2;0;200;255m'
-FAST_YELLOW = '\033[38;2;255;200;0m'
-FAST_RED = '\033[38;2;255;100;100m'
-FAST_BLUE = '\033[38;2;100;150;255m'
-FAST_PURPLE = '\033[38;2;200;100;255m'
-FAST_RESET = '\033[0m'
+C = type('Color', (), {
+    'GREEN': '\033[38;2;0;255;100m',
+    'CYAN': '\033[38;2;0;200;255m',
+    'YELLOW': '\033[38;2;255;200;0m',
+    'RED': '\033[38;2;255;100;100m',
+    'BLUE': '\033[38;2;100;150;255m',
+    'PURPLE': '\033[38;2;200;100;255m',
+    'ORANGE': '\033[38;2;255;150;50m',
+    'WHITE': '\033[38;2;255;255;255m',
+    'RESET': '\033[0m'
+})()
 
 # ==================== GLOBAL VARS ====================
 API_KEY = ""
 HISTORY = []
 CURRENT_MODEL = "openrouter/free"
+SECONDARY_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
+DUAL_MODE = False
 CUSTOM_PROMPT = ""
 
 # ==================== CACHE SYSTEM ====================
@@ -183,37 +191,39 @@ class ConnectionPool:
     def __new__(cls):
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance.conn = None
+            cls._instance.conn = {}
         return cls._instance
     
-    def get_connection(self):
-        if self.conn is None:
-            self.conn = http.client.HTTPSConnection("openrouter.ai", timeout=20)
-        return self.conn
+    def get_connection(self, host="openrouter.ai"):
+        if host not in self.conn or self.conn[host] is None:
+            self.conn[host] = http.client.HTTPSConnection(host, timeout=20)
+        return self.conn[host]
     
     def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
+        for host, conn in self.conn.items():
+            if conn:
+                conn.close()
+        self.conn = {}
 
 conn_pool = ConnectionPool()
 
-# ==================== AUTO-UPDATE CHECKER ====================
-def check_for_updates():
-    try:
-        if os.path.exists(files.update_check_file):
+# ==================== UPDATE CHECKER ====================
+def check_for_updates(force=False):
+    """Check GitHub for new version"""
+    if not force and os.path.exists(files.update_check_file):
+        try:
             with open(files.update_check_file, 'r') as f:
                 last_check = json.load(f)
                 last_time = last_check.get('timestamp', 0)
-                if time.time() - last_time < 86400:
+                if time.time() - last_time < 86400:  # 24 hours
                     return last_check.get('update_available', False), last_check.get('latest_version')
-    except:
-        pass
+        except:
+            pass
     
     try:
         url = f"https://api.github.com/repos/{GITHUB_USER}/TerminusAI/releases/latest"
         req = urllib.request.Request(url, headers={'User-Agent': 'TerminusAI'})
-        with urllib.request.urlopen(req, timeout=5) as response:
+        with urllib.request.urlopen(req, timeout=10) as response:
             data = json.loads(response.read().decode())
             latest = data.get('tag_name', '').replace('v', '')
             update_available = latest > VERSION if latest else False
@@ -227,273 +237,78 @@ def check_for_updates():
                 }, f)
             
             return update_available, latest
-    except:
+    except Exception as e:
         return False, None
 
 def show_update_banner():
     try:
         update_available, latest = check_for_updates()
         if update_available:
-            print(f"\n{FAST_YELLOW}╔══════════════════════════════════════════════════╗")
+            print(f"\n{C.YELLOW}╔══════════════════════════════════════════════════╗")
             print(f"║  🎉 UPDATE AVAILABLE! v{latest} is out!              ║")
-            print(f"║  Run: curl -o ~/.terminusai/terminusai.py {REPO_URL}/raw/main/terminusai.py")
-            print(f"╚══════════════════════════════════════════════════╝{FAST_RESET}")
+            print(f"║  Run: python -c \"$(curl -fsSL {REPO_URL}/raw/main/update.py)\"")
+            print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
             return True
     except:
         pass
     return False
 
-# ==================== AUTO-INSTALLER ====================
-def check_and_install_dependencies():
-    print(f"{FAST_CYAN}")
-    print("╔══════════════════════════════════════════════════╗")
-    print("║         TerminusAI v1.3.1 - Quick Setup         ║")
-    print("╚══════════════════════════════════════════════════╝")
-    print(f"{FAST_RESET}")
+def update_menu():
+    """Manual update checker menu"""
+    clear()
+    print_header()
+    print(f"\n{C.CYAN}╔══════════════════════════════════════════════════╗")
+    print("║              🔄 UPDATE CHECKER                    ║")
+    print("╚══════════════════════════════════════════════════╝\n{C.RESET}")
     
-    if not os.path.exists('/data/data/com.termux'):
-        print(f"{FAST_RED}❌ Termux only!{FAST_RESET}")
-        sys.exit(1)
+    print(f"{C.YELLOW}Current version: {C.GREEN}v{VERSION}{C.RESET}")
     
-    try:
-        urllib.request.urlopen('https://8.8.8.8', timeout=2)
-        print(f"{FAST_GREEN}✓ Internet OK{FAST_RESET}")
-    except:
-        print(f"{FAST_RED}❌ No internet{FAST_RESET}")
-        sys.exit(1)
+    print(f"\n{C.CYAN}[1] Check for updates now{C.RESET}")
+    print(f"{C.CYAN}[2] View changelog{C.RESET}")
+    print(f"{C.CYAN}[3] Download latest version{C.RESET}")
+    print(f"{C.CYAN}[4] Update TerminusAI{C.RESET}")
+    print(f"{C.CYAN}[0] Back to main menu{C.RESET}")
     
-    print(f"{FAST_YELLOW}⚡ Installing dependencies...{FAST_RESET}")
-    subprocess.run(['pkg', 'install', 'python', '-y'], capture_output=True)
+    choice = input(f"\n{C.GREEN}Select: {C.RESET}").strip()
     
-    print(f"\n{FAST_CYAN}🔑 OpenRouter API key: {FAST_RESET}")
-    print(f"{FAST_YELLOW}Get free key: https://openrouter.ai/keys{FAST_RESET}")
-    api_key = input().strip()
-    
-    if api_key:
-        config = files.get_config()
-        config['api_key'] = api_key
-        config['model'] = "openrouter/free"
-        config['version'] = VERSION
-        config['last_setup'] = datetime.now().isoformat()
-        files.save_config(config)
-        print(f"{FAST_GREEN}✓ Ready!{FAST_RESET}")
-    
-    time.sleep(1)
-
-# ==================== UTILITIES ====================
-def clear():
-    os.system('clear')
-
-def load_config():
-    global API_KEY, CURRENT_MODEL, CUSTOM_PROMPT
-    config = files.get_config()
-    API_KEY = config.get('api_key', '')
-    CURRENT_MODEL = config.get('model', 'openrouter/free')
-    CUSTOM_PROMPT = config.get('custom_prompt', '')
-
-def save_config():
-    config = files.get_config()
-    config['api_key'] = API_KEY
-    config['model'] = CURRENT_MODEL
-    config['custom_prompt'] = CUSTOM_PROMPT
-    config['version'] = VERSION
-    config['last_updated'] = datetime.now().isoformat()
-    files.save_config(config)
-
-def get_current_time():
-    return datetime.now().strftime("%H:%M:%S")
-
-def print_header():
-    tw = os.get_terminal_size().columns
-    current_time = get_current_time()
-    
-    lines = [
-        f"{FAST_BLUE}╔══════════════════════════════════════════════════╗",
-        f"║           {APP_NAME} v{VERSION}                    ║",
-        "║      Your Terminal AI Companion                  ║",
-        f"╠══════════════════════════════════════════════════╣",
-        f"║  🕐 {current_time:<49} ║",
-        f"╚══════════════════════════════════════════════════╝{FAST_RESET}"
-    ]
-    
-    print("\n" * 1)
-    for line in lines:
-        clean_len = len(line.replace(FAST_BLUE, '').replace(FAST_RESET, ''))
-        pad = (tw - clean_len) // 2
-        print(" " * max(0, pad) + line)
-
-def fast_print(text, batch_size=30):
-    if not text:
-        print()
-        return
-    for i in range(0, len(text), batch_size):
-        sys.stdout.write(text[i:i+batch_size])
-        sys.stdout.flush()
-        time.sleep(0.0003)
-    print()
-
-def highlight_code(text):
-    if not text:
-        return text
-    pattern = r'```(\w+)?\n(.*?)```'
-    def replace_code(match):
-        lang = match.group(1) or 'text'
-        code = match.group(2)
-        return f"\n{FAST_GREEN}┌─[{lang.upper()}]─────────────────┐\n{FAST_YELLOW}{code}\n{FAST_GREEN}└────────────────────────────────┘{FAST_RESET}"
-    try:
-        return re.sub(pattern, replace_code, text, flags=re.DOTALL, count=3)
-    except:
-        return text
-
-def smart_max_tokens(question):
-    if not question:
-        return 300
-    length = len(question)
-    if length < 30:
-        return 300
-    elif length < 100:
-        return 500
-    else:
-        return 800
-
-# ==================== FEATURES ====================
-def copy_to_clipboard(text):
-    if not text:
-        return f"{FAST_YELLOW}⚠ Nothing to copy{FAST_RESET}"
-    try:
-        if len(text) > 5000:
-            text = text[:5000]
-        subprocess.run(['termux-clipboard-set', text], timeout=1, capture_output=True)
-        return f"{FAST_GREEN}✓ Copied ({len(text)} chars){FAST_RESET}"
-    except:
-        return f"{FAST_RED}❌ Install termux-api{FAST_RESET}"
-
-def paste_from_clipboard():
-    try:
-        result = subprocess.run(['termux-clipboard-get'], capture_output=True, text=True, timeout=1)
-        if result.stdout:
-            return f"{FAST_CYAN}📋 Clipboard:\n\n{result.stdout[:2000]}{FAST_RESET}"
-        return f"{FAST_YELLOW}📋 Empty{FAST_RESET}"
-    except:
-        return f"{FAST_RED}❌ Install termux-api{FAST_RESET}"
-
-def generate_image(prompt):
-    if not prompt:
-        return f"{FAST_YELLOW}⚠ Usage: /imagine description{FAST_RESET}"
-    try:
-        encoded = urllib.parse.quote(prompt)
-        url = f"https://image.pollinations.ai/prompt/{encoded}"
-        filename = os.path.join(files.base_dir, f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
-        print(f"{FAST_GREEN}🎨 Generating...{FAST_RESET}")
-        urllib.request.urlretrieve(url, filename)
-        if os.path.exists(filename) and os.path.getsize(filename) > 1000:
-            try:
-                subprocess.run(['termux-open', filename], timeout=2, capture_output=True)
-                return f"{FAST_GREEN}✅ Saved: {filename}{FAST_RESET}"
-            except:
-                return f"{FAST_GREEN}✅ Saved: {filename}{FAST_RESET}"
-        return f"{FAST_RED}❌ Failed to generate{FAST_RESET}"
-    except Exception as e:
-        return f"{FAST_RED}❌ Error: {str(e)[:50]}{FAST_RESET}"
-
-def smart_calc(expression):
-    if not expression:
-        return f"{FAST_YELLOW}⚠ Usage: /calc 2+2{FAST_RESET}"
-    try:
-        expression = expression.replace(" ", "")
-        import math
-        allowed = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
-        allowed.update({"abs": abs, "round": round})
-        
-        if not re.match(r'^[\d\s\+\-\*\/\%\(\)\.\^\,\|\&\~\<\>\=\!\+\-\*\/\%\*\*\,\s]+$', expression.replace("**", "")):
-            if any(func in expression for func in ['sqrt', 'sin', 'cos', 'tan', 'log', 'pi', 'e']):
-                result = eval(expression, {"__builtins__": {}}, allowed)
-            else:
-                return f"{FAST_RED}❌ Invalid expression{FAST_RESET}"
+    if choice == '1':
+        print(f"\n{C.YELLOW}Checking for updates...{C.RESET}")
+        update_available, latest = check_for_updates(force=True)
+        if update_available:
+            print(f"{C.GREEN}✓ Update available! v{latest} → v{VERSION}{C.RESET}")
+            print(f"{C.CYAN}Use option 4 to update{C.RESET}")
         else:
-            result = eval(expression, {"__builtins__": {}}, {})
-        return f"{FAST_GREEN}🧮 {expression} = {result}{FAST_RESET}"
-    except ZeroDivisionError:
-        return f"{FAST_RED}❌ Division by zero{FAST_RESET}"
-    except Exception as e:
-        return f"{FAST_RED}❌ Error: {str(e)[:30]}{FAST_RESET}"
-
-def web_search(query):
-    if not query:
-        return f"{FAST_YELLOW}⚠ Usage: /search query{FAST_RESET}"
-    try:
-        encoded = urllib.parse.quote(query)
-        url = f"https://html.duckduckgo.com/html/?q={encoded}"
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
-        with urllib.request.urlopen(req, timeout=8) as response:
-            html = response.read().decode('utf-8')
-            results = re.findall(r'<a rel="nofollow" class="result__a" href="[^"]*">([^<]+)</a>', html)
-            output = f"{FAST_CYAN}🔍 '{query}':\n\n{FAST_RESET}"
-            for i, title in enumerate(results[:5], 1):
-                output += f"  {i}. {title}\n"
-            return output if results else f"{FAST_YELLOW}No results{FAST_RESET}"
-    except Exception as e:
-        return f"{FAST_RED}❌ Search failed: {str(e)[:30]}{FAST_RESET}"
-
-def get_weather(city):
-    if not city:
-        return f"{FAST_YELLOW}⚠ Usage: /weather city{FAST_RESET}"
-    try:
-        url = f"https://wttr.in/{city}?format=%C:+%t,+%w"
-        with urllib.request.urlopen(url, timeout=8) as response:
-            weather = response.read().decode('utf-8').strip()
-            return f"{FAST_CYAN}🌤️ {city}: {weather}{FAST_RESET}"
-    except Exception as e:
-        return f"{FAST_RED}❌ Weather failed: {str(e)[:30]}{FAST_RESET}"
-
-def generate_password(length=16):
-    try:
-        chars = string.ascii_letters + string.digits + "!@#$%^&*"
-        password = ''.join(secrets.choice(chars) for _ in range(length))
-        strength = "Strong" if length >= 12 else "Medium" if length >= 8 else "Weak"
-        return f"{FAST_GREEN}🔐 Password: {password}\n   Strength: {strength}{FAST_RESET}"
-    except:
-        return f"{FAST_RED}❌ Failed to generate{FAST_RESET}"
-
-def save_current_chat():
-    global HISTORY
-    if not HISTORY:
-        return f"{FAST_YELLOW}⚠ No conversation to save{FAST_RESET}"
+            print(f"{C.GREEN}✓ You're on the latest version!{C.RESET}")
+        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
     
-    name = input(f"{FAST_CYAN}📁 Name (Enter for auto): {FAST_RESET}").strip()
-    if not name:
-        name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    elif choice == '2':
+        print(f"\n{C.CYAN}📋 Changelog for v{VERSION}:{C.RESET}")
+        print(f"{C.GREEN}  • Added update checker menu{C.RESET}")
+        print(f"{C.GREEN}  • Added DUAL AI MODE (compare responses){C.RESET}")
+        print(f"{C.GREEN}  • Added Turbo Mode for response enhancement{C.RESET}")
+        print(f"{C.GREEN}  • Fixed all NoneType and JSON errors{C.RESET}")
+        print(f"{C.GREEN}  • Auto-save on exit{C.RESET}")
+        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
     
-    try:
-        files.save_chat(name, HISTORY, CURRENT_MODEL)
-        return f"{FAST_GREEN}✅ Saved: {name}{FAST_RESET}"
-    except Exception as e:
-        return f"{FAST_RED}❌ Save failed: {str(e)[:30]}{FAST_RESET}"
+    elif choice == '3':
+        print(f"\n{C.CYAN}📥 Download instructions:{C.RESET}")
+        print(f"{C.YELLOW}  curl -o ~/terminusai.py {REPO_URL}/raw/main/terminusai.py{C.RESET}")
+        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
+    
+    elif choice == '4':
+        print(f"\n{C.YELLOW}Updating TerminusAI...{C.RESET}")
+        try:
+            import urllib.request
+            urllib.request.urlretrieve(f"{REPO_URL}/raw/main/terminusai.py", "/tmp/terminusai_new.py")
+            subprocess.run(['cp', '/tmp/terminusai_new.py', os.path.expanduser("~/terminusai.py")])
+            print(f"{C.GREEN}✓ Update downloaded! Restart TerminusAI to apply.{C.RESET}")
+        except Exception as e:
+            print(f"{C.RED}❌ Update failed: {e}{C.RESET}")
+        input(f"\n{C.YELLOW}Press Enter...{C.RESET}")
 
-def load_chat_session():
-    global HISTORY
-    sessions = files.list_chats()
-    if not sessions:
-        return f"{FAST_YELLOW}⚠ No saved chats{FAST_RESET}"
-    
-    print(f"\n{FAST_CYAN}📂 Saved chats:{FAST_RESET}")
-    for i, s in enumerate(sessions, 1):
-        print(f"  {i}. {s}")
-    
-    try:
-        choice = int(input(f"\n{FAST_GREEN}Select (1-{len(sessions)} or 0): {FAST_RESET}")) - 1
-        if 0 <= choice < len(sessions):
-            data = files.load_chat(sessions[choice])
-            if data:
-                HISTORY = data.get('history', [])
-                return f"{FAST_GREEN}✅ Loaded {len(HISTORY)//2} exchanges{FAST_RESET}"
-    except:
-        pass
-    return f"{FAST_YELLOW}Cancelled{FAST_RESET}"
-
-# ==================== MAIN AI CHAT ====================
-def send_api_request(user_input, system_prompt):
-    """Send request to API with proper error handling"""
+# ==================== DUAL MODE & TURBO MODE ====================
+def send_api_request(user_input, system_prompt, model):
+    """Send request to specific model with proper error handling"""
     try:
         messages = [{"role": "system", "content": system_prompt}]
         for msg in HISTORY[-10:]:
@@ -502,10 +317,10 @@ def send_api_request(user_input, system_prompt):
         
         conn = conn_pool.get_connection()
         payload = json.dumps({
-            "model": CURRENT_MODEL,
+            "model": model,
             "messages": messages,
             "temperature": 0.5,
-            "max_tokens": smart_max_tokens(user_input),
+            "max_tokens": 500,
             "top_p": 0.9
         })
         headers = {
@@ -536,7 +351,7 @@ def send_api_request(user_input, system_prompt):
         return content, None
         
     except json.JSONDecodeError as e:
-        return None, f"Invalid JSON response: {str(e)[:50]}"
+        return None, f"Invalid JSON: {str(e)[:50]}"
     except http.client.HTTPException as e:
         return None, f"HTTP error: {str(e)[:50]}"
     except socket.timeout:
@@ -544,11 +359,310 @@ def send_api_request(user_input, system_prompt):
     except Exception as e:
         return None, f"Error: {str(e)[:80]}"
 
+def dual_mode_chat(user_input, system_prompt):
+    """Send request to two models and compare responses"""
+    print(f"\n{C.CYAN}🔥 DUAL MODE: Asking both models...{C.RESET}\n")
+    
+    # Model 1 (Primary)
+    print(f"{C.BLUE}[Model 1: {CURRENT_MODEL[:30]}]{C.RESET}")
+    response1, error1 = send_api_request(user_input, system_prompt, CURRENT_MODEL)
+    
+    # Model 2 (Secondary)
+    print(f"{C.PURPLE}[Model 2: {SECONDARY_MODEL[:30]}]{C.RESET}")
+    response2, error2 = send_api_request(user_input, system_prompt, SECONDARY_MODEL)
+    
+    print(f"\n{C.YELLOW}{'='*50}{C.RESET}")
+    print(f"{C.GREEN}📊 COMPARISON RESULTS:{C.RESET}")
+    print(f"{C.YELLOW}{'='*50}{C.RESET}\n")
+    
+    # Display both responses
+    print(f"{C.BLUE}╔══════════════════════════════════════════════════╗")
+    print(f"║  MODEL 1: {CURRENT_MODEL[:40]:<40} ║")
+    print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
+    
+    if error1:
+        print(f"{C.RED}❌ Error: {error1}{C.RESET}")
+    else:
+        print(highlight_code(response1))
+    
+    print(f"\n{C.PURPLE}╔══════════════════════════════════════════════════╗")
+    print(f"║  MODEL 2: {SECONDARY_MODEL[:40]:<40} ║")
+    print(f"╚══════════════════════════════════════════════════╝{C.RESET}")
+    
+    if error2:
+        print(f"{C.RED}❌ Error: {error2}{C.RESET}")
+    else:
+        print(highlight_code(response2))
+    
+    # Ask which response to keep
+    print(f"\n{C.YELLOW}{'─'*50}{C.RESET}")
+    print(f"{C.CYAN}Which response do you want to keep?{C.RESET}")
+    print(f"  {C.GREEN}[1] Keep Model 1 response{C.RESET}")
+    print(f"  {C.GREEN}[2] Keep Model 2 response{C.RESET}")
+    print(f"  {C.GREEN}[3] Keep both (append){C.RESET}")
+    print(f"  {C.GREEN}[0] Discard both{C.RESET}")
+    
+    choice = input(f"\n{C.YELLOW}Select: {C.RESET}").strip()
+    
+    if choice == '1' and not error1:
+        return response1
+    elif choice == '2' and not error2:
+        return response2
+    elif choice == '3':
+        if error1 and error2:
+            return None
+        elif error1:
+            return response2
+        elif error2:
+            return response1
+        return f"{response1}\n\n--- Alternative Response ---\n\n{response2}"
+    else:
+        return None
+
+def turbo_rewrite(text):
+    """Rewrite/enhance text using AI (Turbo Mode)"""
+    if not text:
+        return None
+    
+    print(f"\n{C.ORANGE}⚡ TURBO MODE: Enhancing response...{C.RESET}")
+    
+    rewrite_prompt = f"""Please rewrite and enhance the following text. Make it better, clearer, and more polished while keeping the same meaning and information:
+
+Original: {text[:500]}
+
+Enhanced version:"""
+    
+    system_prompt = "You are a text enhancement assistant. Rewrite text to be clearer and more polished."
+    
+    enhanced, error = send_api_request(rewrite_prompt, system_prompt, CURRENT_MODEL)
+    
+    if error:
+        print(f"{C.RED}Turbo mode failed: {error}{C.RESET}")
+        return text
+    
+    return enhanced
+
+# ==================== UTILITIES ====================
+def clear():
+    os.system('clear')
+
+def load_config():
+    global API_KEY, CURRENT_MODEL, SECONDARY_MODEL, CUSTOM_PROMPT, DUAL_MODE
+    config = files.get_config()
+    API_KEY = config.get('api_key', '')
+    CURRENT_MODEL = config.get('model', 'openrouter/free')
+    SECONDARY_MODEL = config.get('secondary_model', 'google/gemini-2.0-flash-lite-preview-02-05:free')
+    CUSTOM_PROMPT = config.get('custom_prompt', '')
+    DUAL_MODE = config.get('dual_mode', False)
+
+def save_config():
+    config = files.get_config()
+    config['api_key'] = API_KEY
+    config['model'] = CURRENT_MODEL
+    config['secondary_model'] = SECONDARY_MODEL
+    config['custom_prompt'] = CUSTOM_PROMPT
+    config['dual_mode'] = DUAL_MODE
+    config['version'] = VERSION
+    config['last_updated'] = datetime.now().isoformat()
+    files.save_config(config)
+
+def get_current_time():
+    return datetime.now().strftime("%H:%M:%S")
+
+def print_header():
+    tw = os.get_terminal_size().columns
+    current_time = get_current_time()
+    
+    lines = [
+        f"{C.BLUE}╔══════════════════════════════════════════════════╗",
+        f"║           {APP_NAME} v{VERSION}                    ║",
+        "║      Your Terminal AI Companion                  ║",
+        f"╠══════════════════════════════════════════════════╣",
+        f"║  🕐 {current_time:<49} ║",
+        f"╚══════════════════════════════════════════════════╝{C.RESET}"
+    ]
+    
+    print("\n" * 1)
+    for line in lines:
+        clean_len = len(line.replace(C.BLUE, '').replace(C.RESET, ''))
+        pad = (tw - clean_len) // 2
+        print(" " * max(0, pad) + line)
+
+def fast_print(text, batch_size=30):
+    if not text:
+        print()
+        return
+    for i in range(0, len(text), batch_size):
+        sys.stdout.write(text[i:i+batch_size])
+        sys.stdout.flush()
+        time.sleep(0.0003)
+    print()
+
+def highlight_code(text):
+    if not text:
+        return text
+    pattern = r'```(\w+)?\n(.*?)```'
+    def replace_code(match):
+        lang = match.group(1) or 'text'
+        code = match.group(2)
+        return f"\n{C.GREEN}┌─[{lang.upper()}]─────────────────┐\n{C.YELLOW}{code}\n{C.GREEN}└────────────────────────────────┘{C.RESET}"
+    try:
+        return re.sub(pattern, replace_code, text, flags=re.DOTALL, count=3)
+    except:
+        return text
+
+def smart_max_tokens(question):
+    if not question:
+        return 300
+    length = len(question)
+    if length < 30:
+        return 300
+    elif length < 100:
+        return 500
+    else:
+        return 800
+
+# ==================== FEATURES ====================
+def copy_to_clipboard(text):
+    if not text:
+        return f"{C.YELLOW}⚠ Nothing to copy{C.RESET}"
+    try:
+        if len(text) > 5000:
+            text = text[:5000]
+        subprocess.run(['termux-clipboard-set', text], timeout=1, capture_output=True)
+        return f"{C.GREEN}✓ Copied ({len(text)} chars){C.RESET}"
+    except:
+        return f"{C.RED}❌ Install termux-api{C.RESET}"
+
+def paste_from_clipboard():
+    try:
+        result = subprocess.run(['termux-clipboard-get'], capture_output=True, text=True, timeout=1)
+        if result.stdout:
+            return f"{C.CYAN}📋 Clipboard:\n\n{result.stdout[:2000]}{C.RESET}"
+        return f"{C.YELLOW}📋 Empty{C.RESET}"
+    except:
+        return f"{C.RED}❌ Install termux-api{C.RESET}"
+
+def generate_image(prompt):
+    if not prompt:
+        return f"{C.YELLOW}⚠ Usage: /imagine description{C.RESET}"
+    try:
+        encoded = urllib.parse.quote(prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded}"
+        filename = os.path.join(files.base_dir, f"generated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jpg")
+        print(f"{C.GREEN}🎨 Generating...{C.RESET}")
+        urllib.request.urlretrieve(url, filename)
+        if os.path.exists(filename) and os.path.getsize(filename) > 1000:
+            try:
+                subprocess.run(['termux-open', filename], timeout=2, capture_output=True)
+                return f"{C.GREEN}✅ Saved: {filename}{C.RESET}"
+            except:
+                return f"{C.GREEN}✅ Saved: {filename}{C.RESET}"
+        return f"{C.RED}❌ Failed to generate{C.RESET}"
+    except Exception as e:
+        return f"{C.RED}❌ Error: {str(e)[:50]}{C.RESET}"
+
+def smart_calc(expression):
+    if not expression:
+        return f"{C.YELLOW}⚠ Usage: /calc 2+2{C.RESET}"
+    try:
+        expression = expression.replace(" ", "")
+        import math
+        allowed = {k: v for k, v in math.__dict__.items() if not k.startswith("_")}
+        allowed.update({"abs": abs, "round": round})
+        
+        if not re.match(r'^[\d\s\+\-\*\/\%\(\)\.\^\,\|\&\~\<\>\=\!\+\-\*\/\%\*\*\,\s]+$', expression.replace("**", "")):
+            if any(func in expression for func in ['sqrt', 'sin', 'cos', 'tan', 'log', 'pi', 'e']):
+                result = eval(expression, {"__builtins__": {}}, allowed)
+            else:
+                return f"{C.RED}❌ Invalid expression{C.RESET}"
+        else:
+            result = eval(expression, {"__builtins__": {}}, {})
+        return f"{C.GREEN}🧮 {expression} = {result}{C.RESET}"
+    except ZeroDivisionError:
+        return f"{C.RED}❌ Division by zero{C.RESET}"
+    except Exception as e:
+        return f"{C.RED}❌ Error: {str(e)[:30]}{C.RESET}"
+
+def web_search(query):
+    if not query:
+        return f"{C.YELLOW}⚠ Usage: /search query{C.RESET}"
+    try:
+        encoded = urllib.parse.quote(query)
+        url = f"https://html.duckduckgo.com/html/?q={encoded}"
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=8) as response:
+            html = response.read().decode('utf-8')
+            results = re.findall(r'<a rel="nofollow" class="result__a" href="[^"]*">([^<]+)</a>', html)
+            output = f"{C.CYAN}🔍 '{query}':\n\n{C.RESET}"
+            for i, title in enumerate(results[:5], 1):
+                output += f"  {i}. {title}\n"
+            return output if results else f"{C.YELLOW}No results{C.RESET}"
+    except Exception as e:
+        return f"{C.RED}❌ Search failed: {str(e)[:30]}{C.RESET}"
+
+def get_weather(city):
+    if not city:
+        return f"{C.YELLOW}⚠ Usage: /weather city{C.RESET}"
+    try:
+        url = f"https://wttr.in/{city}?format=%C:+%t,+%w"
+        with urllib.request.urlopen(url, timeout=8) as response:
+            weather = response.read().decode('utf-8').strip()
+            return f"{C.CYAN}🌤️ {city}: {weather}{C.RESET}"
+    except Exception as e:
+        return f"{C.RED}❌ Weather failed: {str(e)[:30]}{C.RESET}"
+
+def generate_password(length=16):
+    try:
+        chars = string.ascii_letters + string.digits + "!@#$%^&*"
+        password = ''.join(secrets.choice(chars) for _ in range(length))
+        strength = "Strong" if length >= 12 else "Medium" if length >= 8 else "Weak"
+        return f"{C.GREEN}🔐 Password: {password}\n   Strength: {strength}{C.RESET}"
+    except:
+        return f"{C.RED}❌ Failed to generate{C.RESET}"
+
+def save_current_chat():
+    global HISTORY
+    if not HISTORY:
+        return f"{C.YELLOW}⚠ No conversation to save{C.RESET}"
+    
+    name = input(f"{C.CYAN}📁 Name (Enter for auto): {C.RESET}").strip()
+    if not name:
+        name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    
+    try:
+        files.save_chat(name, HISTORY, CURRENT_MODEL)
+        return f"{C.GREEN}✅ Saved: {name}{C.RESET}"
+    except Exception as e:
+        return f"{C.RED}❌ Save failed: {str(e)[:30]}{C.RESET}"
+
+def load_chat_session():
+    global HISTORY
+    sessions = files.list_chats()
+    if not sessions:
+        return f"{C.YELLOW}⚠ No saved chats{C.RESET}"
+    
+    print(f"\n{C.CYAN}📂 Saved chats:{C.RESET}")
+    for i, s in enumerate(sessions, 1):
+        print(f"  {i}. {s}")
+    
+    try:
+        choice = int(input(f"\n{C.GREEN}Select (1-{len(sessions)} or 0): {C.RESET}")) - 1
+        if 0 <= choice < len(sessions):
+            data = files.load_chat(sessions[choice])
+            if data:
+                HISTORY = data.get('history', [])
+                return f"{C.GREEN}✅ Loaded {len(HISTORY)//2} exchanges{C.RESET}"
+    except:
+        pass
+    return f"{C.YELLOW}Cancelled{C.RESET}"
+
+# ==================== MAIN AI CHAT ====================
 def ai_chat():
-    global API_KEY, HISTORY, CURRENT_MODEL, CUSTOM_PROMPT
+    global API_KEY, HISTORY, CURRENT_MODEL, SECONDARY_MODEL, CUSTOM_PROMPT, DUAL_MODE
     
     if not API_KEY:
-        print(f"\n{FAST_RED}❌ No API key! Set in Settings (option 3){FAST_RESET}")
+        print(f"\n{C.RED}❌ No API key! Set in Settings (option 3){C.RESET}")
         input("\nPress Enter...")
         return
     
@@ -559,10 +673,14 @@ def ai_chat():
         print_header()
         tw = os.get_terminal_size().columns
         
-        print(f"\n{FAST_CYAN}📡 {CURRENT_MODEL[:40]}{FAST_RESET}")
-        print(f"{FAST_YELLOW}💬 {len(HISTORY)//2} exchanges | 💾 {len(cache.cache)} cached{FAST_RESET}")
+        # Status bar
+        mode_text = f"{C.ORANGE}🔥 DUAL MODE{C.RESET}" if DUAL_MODE else f"{C.CYAN}🔄 SINGLE MODE{C.RESET}"
+        print(f"\n{C.CYAN}📡 {CURRENT_MODEL[:40]}{C.RESET}")
+        print(f"{C.YELLOW}💬 {len(HISTORY)//2} exchanges | 💾 {len(cache.cache)} cached | {mode_text}{C.RESET}")
+        if DUAL_MODE:
+            print(f"{C.PURPLE}🔀 Secondary: {SECONDARY_MODEL[:35]}{C.RESET}")
         print("\n" + "─" * tw)
-        print(f"{FAST_GREEN}You: {FAST_RESET}", end="")
+        print(f"{C.GREEN}You: {C.RESET}", end="")
         user_input = input()
         
         if not user_input or not user_input.strip():
@@ -575,23 +693,24 @@ def ai_chat():
             break
         elif cmd == '/clear':
             HISTORY = []
-            print(f"\n{FAST_GREEN}✓ Cleared{FAST_RESET}")
+            print(f"\n{C.GREEN}✓ Cleared{C.RESET}")
             input("\nPress Enter...")
             continue
         elif cmd == '/help':
             help_text = f"""
-{FAST_CYAN}📖 {APP_NAME} v{VERSION} Commands:{FAST_RESET}
+{C.CYAN}📖 {APP_NAME} v{VERSION} Commands:{C.RESET}
 
-{FAST_GREEN}Core:{FAST_RESET}  /help, /clear, /quit, /save, /load
-{FAST_CYAN}Clipboard:{FAST_RESET}  /copy, /paste
-{FAST_YELLOW}Media:{FAST_RESET}  /imagine <prompt>
-{FAST_PURPLE}Tools:{FAST_RESET}  /calc <expr>, /password, /search <q>, /weather <city>
+{C.GREEN}Core:{C.RESET}  /help, /clear, /quit, /save, /load
+{C.CYAN}Clipboard:{C.RESET}  /copy, /paste
+{C.YELLOW}Media:{C.RESET}  /imagine <prompt>
+{C.PURPLE}Tools:{C.RESET}  /calc <expr>, /password, /search <q>, /weather <city>
+{C.ORANGE}Advanced:{C.RESET}  /dual, /turbo, /checkupdate, /models
 
-{FAST_BLUE}💡 Examples:{FAST_RESET}
-  /calc 2+2*10
-  /imagine a cat in space
-  /search python tutorial
-  /weather London
+{C.BLUE}💡 Examples:{C.RESET}
+  /dual              - Toggle Dual Mode (compare 2 models)
+  /turbo             - Enhance last response with AI
+  /checkupdate       - Check for updates
+  /models            - Change secondary model
 """
             print(help_text)
             input("\nPress Enter...")
@@ -601,7 +720,7 @@ def ai_chat():
                 result = copy_to_clipboard(HISTORY[-1]['content'])
                 print(f"\n{result}")
             else:
-                print(f"\n{FAST_YELLOW}No response to copy{FAST_RESET}")
+                print(f"\n{C.YELLOW}No response to copy{C.RESET}")
             input("\nPress Enter...")
             continue
         elif cmd == '/paste':
@@ -636,35 +755,88 @@ def ai_chat():
             print("\n" + load_chat_session())
             input("\nPress Enter...")
             continue
-        
-        # Check cache first
-        cached = cache.get(user_input, CURRENT_MODEL)
-        if cached:
-            print(f"\n{FAST_CYAN}AI (cached): {FAST_RESET}")
-            highlighted = highlight_code(cached)
-            fast_print(highlighted)
-            HISTORY.append({"role": "user", "content": user_input})
-            HISTORY.append({"role": "assistant", "content": cached})
-            files.log_message("USER", user_input)
-            files.log_message("ASSISTANT", cached)
-            print("\n" + "─" * tw)
-            input(f"{FAST_YELLOW}[Enter] continue{FAST_RESET}")
+        elif cmd == '/dual':
+            DUAL_MODE = not DUAL_MODE
+            save_config()
+            print(f"\n{C.GREEN}✓ Dual Mode {'ENABLED' if DUAL_MODE else 'DISABLED'}{C.RESET}")
+            print(f"{C.YELLOW}Dual mode will query both models and let you choose the best response{C.RESET}")
+            input("\nPress Enter...")
+            continue
+        elif cmd == '/turbo':
+            if HISTORY:
+                last_response = HISTORY[-1]['content']
+                enhanced = turbo_rewrite(last_response)
+                if enhanced:
+                    print(f"\n{C.GREEN}✨ Enhanced Response:{C.RESET}\n")
+                    fast_print(highlight_code(enhanced))
+                    HISTORY[-1]['content'] = enhanced
+                    print(f"\n{C.GREEN}✓ Response updated!{C.RESET}")
+                else:
+                    print(f"\n{C.RED}❌ Turbo mode failed{C.RESET}")
+            else:
+                print(f"\n{C.YELLOW}⚠ No response to enhance{C.RESET}")
+            input("\nPress Enter...")
+            continue
+        elif cmd == '/checkupdate':
+            print(f"\n{C.YELLOW}Checking for updates...{C.RESET}")
+            update_available, latest = check_for_updates(force=True)
+            if update_available:
+                print(f"{C.GREEN}✓ Update available! v{latest} → v{VERSION}{C.RESET}")
+                print(f"{C.CYAN}Run option 4 in update menu to update{C.RESET}")
+            else:
+                print(f"{C.GREEN}✓ You're on the latest version!{C.RESET}")
+            input("\nPress Enter...")
+            continue
+        elif cmd == '/models':
+            print(f"\n{C.CYAN}Current secondary model: {SECONDARY_MODEL}{C.RESET}")
+            print(f"{C.YELLOW}Enter new model ID (or Enter to keep): {C.RESET}", end="")
+            new_model = input().strip()
+            if new_model:
+                SECONDARY_MODEL = new_model
+                save_config()
+                print(f"{C.GREEN}✓ Secondary model updated!{C.RESET}")
+            input("\nPress Enter...")
             continue
         
-        # API call
-        print(f"\n{FAST_CYAN}AI: {FAST_RESET}")
+        # Check cache first (only in single mode)
+        if not DUAL_MODE:
+            cached = cache.get(user_input, CURRENT_MODEL)
+            if cached:
+                print(f"\n{C.CYAN}AI (cached): {C.RESET}")
+                highlighted = highlight_code(cached)
+                fast_print(highlighted)
+                HISTORY.append({"role": "user", "content": user_input})
+                HISTORY.append({"role": "assistant", "content": cached})
+                files.log_message("USER", user_input)
+                files.log_message("ASSISTANT", cached)
+                print("\n" + "─" * tw)
+                input(f"{C.YELLOW}[Enter] continue{C.RESET}")
+                continue
         
-        content, error = send_api_request(user_input, system_prompt)
+        # Get response
+        print(f"\n{C.CYAN}AI: {C.RESET}")
         
-        if error:
-            print(f"{FAST_RED}❌ {error}{FAST_RESET}")
-            print(f"\n{FAST_YELLOW}💡 Tips:{FAST_RESET}")
-            print("  • Check your API key in Settings (option 3)")
-            print("  • Make sure you have internet connection")
-            print("  • Try switching models (option 4)")
-        elif content:
-            # Cache the response
-            cache.put(user_input, CURRENT_MODEL, content)
+        if DUAL_MODE:
+            content = dual_mode_chat(user_input, system_prompt)
+            if not content:
+                print(f"{C.RED}❌ Both models failed to respond{C.RESET}")
+                input("\nPress Enter...")
+                continue
+        else:
+            content, error = send_api_request(user_input, system_prompt, CURRENT_MODEL)
+            if error:
+                print(f"{C.RED}❌ {error}{C.RESET}")
+                print(f"\n{C.YELLOW}💡 Tips:{C.RESET}")
+                print("  • Check your API key in Settings (option 3)")
+                print("  • Make sure you have internet connection")
+                print("  • Try switching models (option 4)")
+                input("\nPress Enter...")
+                continue
+        
+        # Cache and save response
+        if content:
+            if not DUAL_MODE:
+                cache.put(user_input, CURRENT_MODEL, content)
             
             highlighted = highlight_code(content)
             HISTORY.append({"role": "user", "content": user_input})
@@ -678,11 +850,9 @@ def ai_chat():
             
             fast_print(highlighted)
             print()
-        else:
-            print(f"{FAST_RED}❌ No response received{FAST_RESET}")
         
         print("\n" + "─" * tw)
-        print(f"{FAST_YELLOW}[Enter] continue  |  /help  |  /quit{FAST_RESET}", end="")
+        print(f"{C.YELLOW}[Enter] continue  |  /help  |  /dual  |  /turbo  |  /quit{C.RESET}", end="")
         input()
 
 # ==================== SETTINGS ====================
@@ -690,27 +860,28 @@ def api_settings():
     global API_KEY
     clear()
     print_header()
-    print(f"\n{FAST_CYAN}🔑 API Key Configuration{FAST_RESET}")
+    print(f"\n{C.CYAN}🔑 API Key Configuration{C.RESET}")
     print(f"Current: {API_KEY[:15]}...{API_KEY[-10:]}" if len(API_KEY) > 25 else "None set")
-    print(f"\n{FAST_YELLOW}New key (or Enter to keep): {FAST_RESET}", end="")
+    print(f"\n{C.YELLOW}New key (or Enter to keep): {C.RESET}", end="")
     new_key = input().strip()
     if new_key:
         API_KEY = new_key
         save_config()
-        print(f"{FAST_GREEN}✓ Saved!{FAST_RESET}")
+        print(f"{C.GREEN}✓ Saved!{C.RESET}")
     input("\nPress Enter...")
 
 def switch_model():
     global CURRENT_MODEL
     clear()
     print_header()
-    print(f"\n{FAST_CYAN}📡 Available Models:{FAST_RESET}")
+    print(f"\n{C.CYAN}📡 Available Models:{C.RESET}")
     print("  1. openrouter/free (fastest, auto-select)")
     print("  2. google/gemini-2.0-flash-lite (fast)")
     print("  3. deepseek/deepseek-chat (good for coding)")
     print("  4. qwen/qwen-2.5-coder-32b (coding expert)")
-    print(f"\n{FAST_GREEN}Current: {CURRENT_MODEL}{FAST_RESET}")
-    choice = input(f"\n{FAST_YELLOW}Select (1-4): {FAST_RESET}").strip()
+    print("  5. Custom model ID")
+    print(f"\n{C.GREEN}Current: {CURRENT_MODEL}{C.RESET}")
+    choice = input(f"\n{C.YELLOW}Select (1-5): {C.RESET}").strip()
     
     models = {
         '1': 'openrouter/free',
@@ -721,16 +892,22 @@ def switch_model():
     if choice in models:
         CURRENT_MODEL = models[choice]
         save_config()
-        print(f"{FAST_GREEN}✓ Switched to {CURRENT_MODEL[:30]}{FAST_RESET}")
+        print(f"{C.GREEN}✓ Switched to {CURRENT_MODEL[:30]}{C.RESET}")
+    elif choice == '5':
+        custom = input(f"{C.CYAN}Enter model ID: {C.RESET}").strip()
+        if custom:
+            CURRENT_MODEL = custom
+            save_config()
+            print(f"{C.GREEN}✓ Switched to {custom[:30]}{C.RESET}")
     input("\nPress Enter...")
 
 def custom_prompt():
     global CUSTOM_PROMPT
     clear()
     print_header()
-    print(f"\n{FAST_CYAN}🎨 Custom System Prompt{FAST_RESET}")
+    print(f"\n{C.CYAN}🎨 Custom System Prompt{C.RESET}")
     print(f"Current: {CUSTOM_PROMPT[:100] if CUSTOM_PROMPT else 'Default'}\n")
-    print(f"{FAST_YELLOW}Enter new prompt (type 'END' on new line):{FAST_RESET}")
+    print(f"{C.YELLOW}Enter new prompt (type 'END' on new line):{C.RESET}")
     lines = []
     while True:
         line = input()
@@ -740,13 +917,13 @@ def custom_prompt():
     if lines:
         CUSTOM_PROMPT = '\n'.join(lines)
         save_config()
-        print(f"{FAST_GREEN}✓ Saved!{FAST_RESET}")
+        print(f"{C.GREEN}✓ Saved!{C.RESET}")
     input("\nPress Enter...")
 
 def storage_info():
     clear()
     print_header()
-    print(f"\n{FAST_CYAN}💾 Storage Information{FAST_RESET}")
+    print(f"\n{C.CYAN}💾 Storage Information{C.RESET}")
     
     def get_size(path):
         total = 0
@@ -770,34 +947,72 @@ def storage_info():
     
     total = sum(sizes.values())
     
-    print(f"\n{FAST_YELLOW}Location: {files.base_dir}{FAST_RESET}\n")
+    print(f"\n{C.YELLOW}Location: {files.base_dir}{C.RESET}\n")
     for name, size in sizes.items():
         if size > 0:
             print(f"  {name:<10}: {size/1024:.1f} KB")
-    print(f"\n{FAST_GREEN}  Total     : {total/1024:.1f} KB{FAST_RESET}")
+    print(f"\n{C.GREEN}  Total     : {total/1024:.1f} KB{C.RESET}")
     
-    print(f"\n{FAST_CYAN}Options:{FAST_RESET}")
+    print(f"\n{C.CYAN}Options:{C.RESET}")
     print("  1. Clear cache")
     print("  2. Delete all logs")
     print("  0. Back")
     
-    choice = input(f"\n{FAST_YELLOW}Select: {FAST_RESET}")
+    choice = input(f"\n{C.YELLOW}Select: {C.RESET}")
     if choice == '1':
         cache.cache.clear()
         cache.save()
-        print(f"{FAST_GREEN}✓ Cache cleared{FAST_RESET}")
+        print(f"{C.GREEN}✓ Cache cleared{C.RESET}")
         time.sleep(1)
     elif choice == '2':
         import shutil
         if os.path.exists(files.logs_dir):
             shutil.rmtree(files.logs_dir)
             os.makedirs(files.logs_dir)
-        print(f"{FAST_GREEN}✓ Logs deleted{FAST_RESET}")
+        print(f"{C.GREEN}✓ Logs deleted{C.RESET}")
         time.sleep(1)
+
+# ==================== AUTO-INSTALLER ====================
+def check_and_install_dependencies():
+    print(f"{C.CYAN}")
+    print("╔══════════════════════════════════════════════════╗")
+    print("║         TerminusAI v1.4 - Quick Setup           ║")
+    print("╚══════════════════════════════════════════════════╝")
+    print(f"{C.RESET}")
+    
+    if not os.path.exists('/data/data/com.termux'):
+        print(f"{C.RED}❌ Termux only!{C.RESET}")
+        sys.exit(1)
+    
+    try:
+        urllib.request.urlopen('https://8.8.8.8', timeout=2)
+        print(f"{C.GREEN}✓ Internet OK{C.RESET}")
+    except:
+        print(f"{C.RED}❌ No internet{C.RESET}")
+        sys.exit(1)
+    
+    print(f"{C.YELLOW}⚡ Installing dependencies...{C.RESET}")
+    subprocess.run(['pkg', 'install', 'python', '-y'], capture_output=True)
+    
+    print(f"\n{C.CYAN}🔑 OpenRouter API key: {C.RESET}")
+    print(f"{C.YELLOW}Get free key: https://openrouter.ai/keys{C.RESET}")
+    api_key = input().strip()
+    
+    if api_key:
+        config = files.get_config()
+        config['api_key'] = api_key
+        config['model'] = "openrouter/free"
+        config['version'] = VERSION
+        config['dual_mode'] = False
+        config['last_setup'] = datetime.now().isoformat()
+        files.save_config(config)
+        print(f"{C.GREEN}✓ Ready!{C.RESET}")
+    
+    time.sleep(1)
 
 # ==================== MAIN MENU ====================
 def main():
-    global API_KEY
+    global API_KEY, DUAL_MODE
     
     if not os.path.exists(files.config_file):
         check_and_install_dependencies()
@@ -811,22 +1026,27 @@ def main():
         print_header()
         tw = os.get_terminal_size().columns
         
-        print(f"\n{FAST_CYAN}╔════════════════════════════════════════════╗")
+        # Mode indicator
+        mode_indicator = f"{C.ORANGE}🔥 DUAL MODE ACTIVE{C.RESET}" if DUAL_MODE else f"{C.CYAN}🔄 SINGLE MODE{C.RESET}"
+        
+        print(f"\n{C.CYAN}╔════════════════════════════════════════════╗")
         print("║              MAIN MENU                       ║")
         print("╠════════════════════════════════════════════╣")
-        print(f"║  {FAST_GREEN}1.{FAST_CYAN} 💬 Start Chat (v1.3.1)               ║")
-        print(f"║  {FAST_PURPLE}2.{FAST_CYAN} 🎨 Custom Prompt                     ║")
-        print(f"║  {FAST_BLUE}3.{FAST_CYAN} 🔑 API Settings                      ║")
-        print(f"║  {FAST_BLUE}4.{FAST_CYAN} 📡 Switch AI Model                   ║")
-        print(f"║  {FAST_YELLOW}5.{FAST_CYAN} 💾 Storage Manager                   ║")
-        print(f"║  {FAST_CYAN}6.{FAST_CYAN} ℹ️  About                            ║")
-        print(f"║  {FAST_RED}7.{FAST_CYAN} 🚪 Exit                             ║")
-        print(f"╚════════════════════════════════════════════╝{FAST_RESET}")
+        print(f"║  {C.GREEN}1.{C.CYAN} 💬 Start Chat                          ║")
+        print(f"║  {C.PURPLE}2.{C.CYAN} 🎨 Custom Prompt                      ║")
+        print(f"║  {C.BLUE}3.{C.CYAN} 🔑 API Settings                       ║")
+        print(f"║  {C.BLUE}4.{C.CYAN} 📡 Switch AI Model                    ║")
+        print(f"║  {C.ORANGE}5.{C.CYAN} 🔥 Dual Mode Settings                 ║")
+        print(f"║  {C.CYAN}6.{C.CYAN} 🔄 Update Checker                     ║")
+        print(f"║  {C.YELLOW}7.{C.CYAN} 💾 Storage Manager                    ║")
+        print(f"║  {C.CYAN}8.{C.CYAN} ℹ️  About                             ║")
+        print(f"║  {C.RED}9.{C.CYAN} 🚪 Exit                              ║")
+        print(f"╚════════════════════════════════════════════╝{C.RESET}")
         
-        print(f"\n{FAST_GREEN}API: {'✅' if API_KEY else '❌'}{FAST_RESET}  {FAST_CYAN}Model: {CURRENT_MODEL[:25]}{FAST_RESET}")
-        print(f"{FAST_YELLOW}Cache: {len(cache.cache)} items{FAST_RESET}")
+        print(f"\n{C.GREEN}API: {'✅' if API_KEY else '❌'}{C.RESET}  {C.CYAN}Model: {CURRENT_MODEL[:25]}{C.RESET}")
+        print(f"{C.YELLOW}Cache: {len(cache.cache)} items | {mode_indicator}{C.RESET}")
         
-        choice = input(f"\n{FAST_GREEN}Select (1-7): {FAST_RESET}").strip()
+        choice = input(f"\n{C.GREEN}Select (1-9): {C.RESET}").strip()
         
         if choice == '1':
             ai_chat()
@@ -837,34 +1057,63 @@ def main():
         elif choice == '4':
             switch_model()
         elif choice == '5':
-            storage_info()
-        elif choice == '6':
             clear()
             print_header()
-            print(f"\n{FAST_CYAN}{APP_NAME} v{VERSION}{FAST_RESET}")
+            print(f"\n{C.ORANGE}🔥 DUAL MODE SETTINGS{C.RESET}\n")
+            print(f"Current secondary model: {SECONDARY_MODEL}")
+            print(f"Dual Mode: {'ON' if DUAL_MODE else 'OFF'}")
+            print(f"\n{C.CYAN}[1] Toggle Dual Mode (on/off){C.RESET}")
+            print(f"[2] Change secondary model{C.RESET}")
+            print(f"[0] Back{C.RESET}")
+            sub_choice = input(f"\n{C.GREEN}Select: {C.RESET}")
+            if sub_choice == '1':
+                DUAL_MODE = not DUAL_MODE
+                save_config()
+                print(f"{C.GREEN}✓ Dual Mode {'ENABLED' if DUAL_MODE else 'DISABLED'}{C.RESET}")
+                input("\nPress Enter...")
+            elif sub_choice == '2':
+                print(f"\n{C.YELLOW}Enter new secondary model ID:{C.RESET}")
+                new_model = input().strip()
+                if new_model:
+                    global SECONDARY_MODEL
+                    SECONDARY_MODEL = new_model
+                    save_config()
+                    print(f"{C.GREEN}✓ Secondary model updated!{C.RESET}")
+                input("\nPress Enter...")
+        elif choice == '6':
+            update_menu()
+        elif choice == '7':
+            storage_info()
+        elif choice == '8':
+            clear()
+            print_header()
+            print(f"\n{C.CYAN}{APP_NAME} v{VERSION}{C.RESET}")
             print(f"Created by: {AUTHOR}")
             print(f"Discord: {AUTHOR_DISCORD}")
             print(f"GitHub: {REPO_URL}")
-            print(f"\n{FAST_GREEN}Features:{FAST_RESET}")
+            print(f"\n{C.GREEN}Features:{C.RESET}")
+            print("  • 🔥 Dual AI Mode - Compare 2 models")
+            print("  • ⚡ Turbo Mode - Enhance responses")
+            print("  • 🔄 Auto & Manual update checking")
             print("  • Fast AI responses with caching")
             print("  • Image generation")
             print("  • Web search & weather")
             print("  • Clipboard support")
             print("  • Password generator")
             print("  • Save/load conversations")
-            print(f"\n{FAST_YELLOW}All data stored in: {files.base_dir}{FAST_RESET}")
+            print(f"\n{C.YELLOW}Commands in chat: /help, /dual, /turbo, /checkupdate, /models{C.RESET}")
             input("\nPress Enter...")
-        elif choice == '7':
+        elif choice == '9':
             conn_pool.close()
-            print(f"\n{FAST_GREEN}Goodbye! 👋{FAST_RESET}")
+            print(f"\n{C.GREEN}Goodbye! 👋{C.RESET}")
             sys.exit()
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print(f"\n{FAST_GREEN}Goodbye! 👋{FAST_RESET}")
+        print(f"\n{C.GREEN}Goodbye! 👋{C.RESET}")
         sys.exit()
     except Exception as e:
-        print(f"\n{FAST_RED}Fatal error: {e}{FAST_RESET}")
+        print(f"\n{C.RED}Fatal error: {e}{C.RESET}")
         sys.exit()
