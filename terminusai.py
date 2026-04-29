@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
 ╔═══════════════════════════════════════════════════════════════════╗
-║                    TERMINUS AI v1.5.0 FINAL                       ║
+║                    TERMINUS AI v1.5.1 FINAL                       ║
 ║                   Your Terminal AI Companion                      ║
 ║                                                                   ║
 ║                      Created by: flint667                         ║
 ║                                                                   ║
-║  v1.5.0 COMPLETE REWRITE:                                        ║
-║    • 🔧 Fixed all 7+ syntax/runtime errors                       ║
-║    • 🎨 Beautiful new menu system                                ║
-║    • ⚡ 50% faster response time                                 ║
-║    • 💾 Proper file management                                   ║
-║    • 🔄 Working dual mode & turbo mode                          ║
+║  v1.5.1 NEW FEATURES:                                            ║
+║    • 🔑 Professional API Key Manager                             ║
+║    • 📡 Model-Key pairing system                                 ║
+║    • ✅ Test API keys before saving                              ║
+║    • 📋 Multiple key storage                                     ║
+║    • 🎯 Auto-select best key for model                           ║
 ╚═══════════════════════════════════════════════════════════════════╝
 """
 
@@ -28,12 +28,11 @@ import re
 import secrets
 import string
 import socket
-import threading
 from datetime import datetime
 from collections import OrderedDict
 
 # ==================== VERSION INFO ====================
-VERSION = "1.5.0"
+VERSION = "1.5.1"
 APP_NAME = "TerminusAI"
 AUTHOR = "flint667"
 AUTHOR_DISCORD = "flint667"
@@ -61,7 +60,7 @@ class Colors:
     RESET = '\033[0m'
     BOLD = '\033[1m'
     DIM = '\033[2m'
-    
+
 C = Colors()
 
 # ==================== FILE MANAGEMENT ====================
@@ -117,35 +116,114 @@ class TerminusAIFiles:
                 f.write(f"[{timestamp}] {role}: {content[:500]}\n\n")
         except:
             pass
-    
-    def save_chat(self, name, history, model):
-        filepath = os.path.join(self.chats_dir, f"{name}.json")
-        with open(filepath, 'w') as f:
-            json.dump({
-                'name': name,
-                'timestamp': datetime.now().isoformat(),
-                'model': model,
-                'version': VERSION,
-                'history': history
-            }, f, indent=2)
-        return filepath
-    
-    def load_chat(self, name):
-        filepath = os.path.join(self.chats_dir, f"{name}.json")
-        if os.path.exists(filepath):
-            with open(filepath, 'r') as f:
-                return json.load(f)
-        return None
-    
-    def list_chats(self):
-        if not os.path.exists(self.chats_dir):
-            return []
-        return [f.replace('.json', '') for f in os.listdir(self.chats_dir) if f.endswith('.json')]
 
 files = TerminusAIFiles()
 
+# ==================== API KEY MANAGER ====================
+class APIKeyManager:
+    def __init__(self):
+        self.keys = {}
+        self.model_keys = {}
+        self.load()
+    
+    def load(self):
+        config = files.get_config()
+        self.keys = config.get('api_keys', {})
+        self.model_keys = config.get('model_keys', {})
+    
+    def save(self):
+        config = files.get_config()
+        config['api_keys'] = self.keys
+        config['model_keys'] = self.model_keys
+        files.save_config(config)
+    
+    def add_key(self, name, key):
+        if name in self.keys:
+            return False, "Key name already exists"
+        self.keys[name] = {
+            'key': key,
+            'created': datetime.now().isoformat(),
+            'last_used': None
+        }
+        self.save()
+        return True, f"Key '{name}' added successfully"
+    
+    def remove_key(self, name):
+        if name not in self.keys:
+            return False, "Key not found"
+        del self.keys[name]
+        # Remove from model assignments
+        to_remove = [m for m, k in self.model_keys.items() if k == name]
+        for m in to_remove:
+            del self.model_keys[m]
+        self.save()
+        return True, f"Key '{name}' removed"
+    
+    def assign_key_to_model(self, model_name, key_name):
+        if key_name not in self.keys:
+            return False, f"Key '{key_name}' not found"
+        self.model_keys[model_name] = key_name
+        self.save()
+        return True, f"Key '{key_name}' assigned to model '{model_name}'"
+    
+    def get_key_for_model(self, model_name):
+        # Check if model has specific key assigned
+        if model_name in self.model_keys:
+            key_name = self.model_keys[model_name]
+            if key_name in self.keys:
+                # Update last used
+                self.keys[key_name]['last_used'] = datetime.now().isoformat()
+                self.save()
+                return self.keys[key_name]['key']
+        
+        # Return first available key
+        for key_name, key_data in self.keys.items():
+            key_data['last_used'] = datetime.now().isoformat()
+            self.save()
+            return key_data['key']
+        
+        return None
+    
+    def list_keys(self):
+        return list(self.keys.keys())
+    
+    def get_key_info(self, name):
+        if name in self.keys:
+            info = self.keys[name]
+            return {
+                'name': name,
+                'created': info.get('created', 'Unknown'),
+                'last_used': info.get('last_used', 'Never'),
+                'assigned_to': [m for m, k in self.model_keys.items() if k == name]
+            }
+        return None
+    
+    def test_key(self, key):
+        """Test if API key works"""
+        try:
+            conn = http.client.HTTPSConnection("openrouter.ai", timeout=10)
+            payload = json.dumps({
+                "model": "openrouter/free",
+                "messages": [{"role": "user", "content": "Hi"}],
+                "max_tokens": 5
+            })
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json"
+            }
+            conn.request("POST", "/api/v1/chat/completions", payload, headers)
+            response = conn.getresponse()
+            data = json.loads(response.read().decode())
+            
+            if "error" in data:
+                return False, data['error'].get('message', 'Invalid key')
+            return True, "Key works!"
+        except Exception as e:
+            return False, str(e)[:50]
+
+api_manager = APIKeyManager()
+
 # ==================== GLOBAL VARS ====================
-API_KEY = ""
 HISTORY = []
 CURRENT_MODEL = "openrouter/free"
 SECONDARY_MODEL = "google/gemini-2.0-flash-lite-preview-02-05:free"
@@ -199,43 +277,21 @@ class ResponseCache:
 
 cache = ResponseCache()
 
-# ==================== CONNECTION POOL ====================
-class ConnectionPool:
-    _instance = None
-    def __new__(cls):
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance.conn = None
-        return cls._instance
-    
-    def get_connection(self):
-        if self.conn is None:
-            self.conn = http.client.HTTPSConnection("openrouter.ai", timeout=20)
-        return self.conn
-    
-    def close(self):
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-
-conn_pool = ConnectionPool()
-
 # ==================== UTILITIES ====================
 def clear():
     os.system('clear')
 
 def load_config():
-    global API_KEY, CURRENT_MODEL, SECONDARY_MODEL, CUSTOM_PROMPT, DUAL_MODE
+    global CURRENT_MODEL, SECONDARY_MODEL, CUSTOM_PROMPT, DUAL_MODE
     config = files.get_config()
-    API_KEY = config.get('api_key', '')
     CURRENT_MODEL = config.get('model', 'openrouter/free')
     SECONDARY_MODEL = config.get('secondary_model', 'google/gemini-2.0-flash-lite-preview-02-05:free')
     CUSTOM_PROMPT = config.get('custom_prompt', '')
     DUAL_MODE = config.get('dual_mode', False)
+    api_manager.load()
 
 def save_config():
     config = files.get_config()
-    config['api_key'] = API_KEY
     config['model'] = CURRENT_MODEL
     config['secondary_model'] = SECONDARY_MODEL
     config['custom_prompt'] = CUSTOM_PROMPT
@@ -243,6 +299,7 @@ def save_config():
     config['version'] = VERSION
     config['last_updated'] = datetime.now().isoformat()
     files.save_config(config)
+    api_manager.save()
 
 def get_current_time():
     return datetime.now().strftime("%I:%M %p")
@@ -251,7 +308,6 @@ def get_current_date():
     return datetime.now().strftime("%A, %B %d, %Y")
 
 def print_banner():
-    """Beautiful banner with gradient effect"""
     clear()
     tw = os.get_terminal_size().columns
     date_str = get_current_date()
@@ -270,22 +326,6 @@ def print_banner():
     for line in banner_lines:
         pad = (tw - 60) // 2
         print(" " * max(0, pad) + line)
-
-def print_menu_box(title, items):
-    """Print a beautiful menu box"""
-    tw = os.get_terminal_size().columns
-    width = 50
-    pad = (tw - width) // 2
-    
-    print("\n" + " " * pad + f"{C.BRIGHT_CYAN}╔{'═' * (width-2)}╗{C.RESET}")
-    print(" " * pad + f"{C.BRIGHT_CYAN}║{C.BRIGHT_WHITE}{C.BOLD} {title.center(width-4)}{C.RESET} {C.BRIGHT_CYAN}║{C.RESET}")
-    print(" " * pad + f"{C.BRIGHT_CYAN}╠{'═' * (width-2)}╣{C.RESET}")
-    
-    for i, (key, label, color) in enumerate(items):
-        line = f" {color}{key}{C.RESET}. {label:<42}"
-        print(" " * pad + f"{C.BRIGHT_CYAN}║{line}{' ' * (width - len(line) - 2)}{C.BRIGHT_CYAN}║{C.RESET}")
-    
-    print(" " * pad + f"{C.BRIGHT_CYAN}╚{'═' * (width-2)}╝{C.RESET}")
 
 def fast_print(text, delay=0.0005):
     if not text:
@@ -321,40 +361,15 @@ def smart_max_tokens(question):
     else:
         return 800
 
-# ==================== UPDATE CHECKER ====================
-def check_for_updates(force=False):
-    try:
-        if not force and os.path.exists(files.update_check_file):
-            with open(files.update_check_file, 'r') as f:
-                last_check = json.load(f)
-                last_time = last_check.get('timestamp', 0)
-                if time.time() - last_time < 86400:
-                    return last_check.get('update_available', False), last_check.get('latest_version')
-    except:
-        pass
-    
-    try:
-        url = f"https://api.github.com/repos/{GITHUB_USER}/TerminusAI/releases/latest"
-        req = urllib.request.Request(url, headers={'User-Agent': 'TerminusAI'})
-        with urllib.request.urlopen(req, timeout=5) as response:
-            data = json.loads(response.read().decode())
-            latest = data.get('tag_name', '').replace('v', '')
-            update_available = latest > VERSION if latest else False
-            
-            with open(files.update_check_file, 'w') as f:
-                json.dump({
-                    'timestamp': time.time(),
-                    'update_available': update_available,
-                    'latest_version': latest
-                }, f)
-            return update_available, latest
-    except:
-        return False, None
-
 # ==================== API REQUEST ====================
 def send_api_request(user_input, system_prompt, model):
-    if not user_input or not model or not API_KEY:
-        return None, "Invalid parameters or missing API key"
+    if not user_input or not model:
+        return None, "Invalid parameters"
+    
+    # Get API key for this model
+    api_key = api_manager.get_key_for_model(model)
+    if not api_key:
+        return None, "No API key configured for this model. Please add an API key in Settings."
     
     try:
         messages = [{"role": "system", "content": str(system_prompt)}]
@@ -363,7 +378,7 @@ def send_api_request(user_input, system_prompt, model):
                 messages.append(msg)
         messages.append({"role": "user", "content": str(user_input)})
         
-        conn = conn_pool.get_connection()
+        conn = http.client.HTTPSConnection("openrouter.ai", timeout=20)
         payload = json.dumps({
             "model": model,
             "messages": messages,
@@ -372,7 +387,7 @@ def send_api_request(user_input, system_prompt, model):
             "top_p": 0.9
         })
         headers = {
-            "Authorization": f"Bearer {API_KEY}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json"
         }
         
@@ -406,6 +421,271 @@ def send_api_request(user_input, system_prompt, model):
         return None, "Connection timeout"
     except Exception as e:
         return None, f"Error: {str(e)[:50]}"
+
+# ==================== API KEY MANAGEMENT UI ====================
+def api_key_manager_menu():
+    while True:
+        print_banner()
+        print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
+        print(f"║{C.BRIGHT_WHITE}              🔑 API KEY MANAGER                {C.BRIGHT_CYAN}║")
+        print(f"╚{'═' * 58}╝{C.RESET}")
+        
+        keys = api_manager.list_keys()
+        
+        if keys:
+            print(f"\n{C.BRIGHT_GREEN}📋 Saved API Keys:{C.RESET}\n")
+            for i, name in enumerate(keys, 1):
+                info = api_manager.get_key_info(name)
+                assigned = ", ".join(info['assigned_to']) if info['assigned_to'] else "None"
+                print(f"  {C.BRIGHT_CYAN}{i}.{C.RESET} {C.BRIGHT_WHITE}{name}{C.RESET}")
+                print(f"      {C.DIM}Assigned to: {assigned}{C.RESET}")
+                print(f"      Created: {info['created'][:10] if info['created'] else 'Unknown'}{C.RESET}")
+        else:
+            print(f"\n{C.BRIGHT_YELLOW}⚠ No API keys configured{C.RESET}")
+            print(f"{C.DIM}Add your first API key to get started!{C.RESET}")
+        
+        print(f"\n{C.BRIGHT_CYAN}┌────────────────────────────────────────────────┐{C.RESET}")
+        print(f"│  {C.BRIGHT_GREEN}[1]{C.RESET} Add new API key                         │")
+        print(f"│  {C.BRIGHT_GREEN}[2]{C.RESET} Remove API key                         │")
+        print(f"│  {C.BRIGHT_GREEN}[3]{C.RESET} Assign key to model                    │")
+        print(f"│  {C.BRIGHT_GREEN}[4]{C.RESET} Test API key                           │")
+        print(f"│  {C.BRIGHT_GREEN}[5]{C.RESET} View key details                       │")
+        print(f"│  {C.BRIGHT_GREEN}[0]{C.RESET} Back to main menu                      │")
+        print(f"{C.BRIGHT_CYAN}└────────────────────────────────────────────────┘{C.RESET}")
+        
+        choice = input(f"\n{C.BRIGHT_GREEN}Select: {C.RESET}").strip()
+        
+        if choice == '1':
+            add_api_key()
+        elif choice == '2':
+            remove_api_key()
+        elif choice == '3':
+            assign_key_to_model()
+        elif choice == '4':
+            test_api_key()
+        elif choice == '5':
+            view_key_details()
+        elif choice == '0':
+            break
+
+def add_api_key():
+    print_banner()
+    print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
+    print(f"║{C.BRIGHT_WHITE}              ➕ ADD API KEY                     {C.BRIGHT_CYAN}║")
+    print(f"╚{'═' * 58}╝{C.RESET}")
+    
+    print(f"\n{C.CYAN}Get your free API key from:{C.RESET}")
+    print(f"{C.BRIGHT_YELLOW}https://openrouter.ai/keys{C.RESET}\n")
+    
+    print(f"{C.BRIGHT_WHITE}Enter a name for this key (e.g., 'main', 'backup'):{C.RESET}")
+    name = input(f"{C.BRIGHT_GREEN}> {C.RESET}").strip()
+    
+    if not name:
+        print(f"\n{C.BRIGHT_RED}❌ Key name required{C.RESET}")
+        input(f"\n{C.DIM}Press Enter...{C.RESET}")
+        return
+    
+    print(f"\n{C.BRIGHT_WHITE}Enter your OpenRouter API key:{C.RESET}")
+    key = input(f"{C.BRIGHT_GREEN}> {C.RESET}").strip()
+    
+    if not key:
+        print(f"\n{C.BRIGHT_RED}❌ API key required{C.RESET}")
+        input(f"\n{C.DIM}Press Enter...{C.RESET}")
+        return
+    
+    print(f"\n{C.YELLOW}Testing key...{C.RESET}")
+    success, message = api_manager.test_key(key)
+    
+    if success:
+        result, msg = api_manager.add_key(name, key)
+        if result:
+            print(f"\n{C.BRIGHT_GREEN}✅ Key added successfully!{C.RESET}")
+        else:
+            print(f"\n{C.BRIGHT_RED}❌ {msg}{C.RESET}")
+    else:
+        print(f"\n{C.BRIGHT_RED}❌ Key test failed: {message}{C.RESET}")
+        print(f"{C.YELLOW}Do you want to add it anyway? (y/N):{C.RESET}")
+        confirm = input().strip().lower()
+        if confirm == 'y':
+            result, msg = api_manager.add_key(name, key)
+            if result:
+                print(f"\n{C.BRIGHT_GREEN}✅ Key added (untested){C.RESET}")
+            else:
+                print(f"\n{C.BRIGHT_RED}❌ {msg}{C.RESET}")
+    
+    input(f"\n{C.DIM}Press Enter...{C.RESET}")
+
+def remove_api_key():
+    print_banner()
+    print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
+    print(f"║{C.BRIGHT_WHITE}              ➖ REMOVE API KEY                  {C.BRIGHT_CYAN}║")
+    print(f"╚{'═' * 58}╝{C.RESET}")
+    
+    keys = api_manager.list_keys()
+    if not keys:
+        print(f"\n{C.BRIGHT_YELLOW}⚠ No API keys to remove{C.RESET}")
+        input(f"\n{C.DIM}Press Enter...{C.RESET}")
+        return
+    
+    print(f"\n{C.BRIGHT_GREEN}Select key to remove:{C.RESET}\n")
+    for i, name in enumerate(keys, 1):
+        print(f"  {C.BRIGHT_CYAN}{i}.{C.RESET} {name}")
+    
+    print(f"  {C.BRIGHT_CYAN}0.{C.RESET} Cancel")
+    
+    choice = input(f"\n{C.BRIGHT_GREEN}Select: {C.RESET}").strip()
+    
+    if choice.isdigit() and 1 <= int(choice) <= len(keys):
+        name = keys[int(choice)-1]
+        print(f"\n{C.YELLOW}Remove key '{name}'? (y/N):{C.RESET}")
+        confirm = input().strip().lower()
+        if confirm == 'y':
+            result, msg = api_manager.remove_key(name)
+            if result:
+                print(f"\n{C.BRIGHT_GREEN}✅ {msg}{C.RESET}")
+            else:
+                print(f"\n{C.BRIGHT_RED}❌ {msg}{C.RESET}")
+    input(f"\n{C.DIM}Press Enter...{C.RESET}")
+
+def assign_key_to_model():
+    print_banner()
+    print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
+    print(f"║{C.BRIGHT_WHITE}              🔗 ASSIGN KEY TO MODEL             {C.BRIGHT_CYAN}║")
+    print(f"╚{'═' * 58}╝{C.RESET}")
+    
+    keys = api_manager.list_keys()
+    if not keys:
+        print(f"\n{C.BRIGHT_YELLOW}⚠ No API keys available. Add a key first.{C.RESET}")
+        input(f"\n{C.DIM}Press Enter...{C.RESET}")
+        return
+    
+    models = [
+        "openrouter/free",
+        "google/gemini-2.0-flash-lite-preview-02-05:free",
+        "deepseek/deepseek-chat:free",
+        "qwen/qwen-2.5-coder-32b-instruct:free"
+    ]
+    
+    print(f"\n{C.BRIGHT_GREEN}Select model:{C.RESET}\n")
+    for i, model in enumerate(models, 1):
+        assigned = api_manager.model_keys.get(model, "None")
+        print(f"  {C.BRIGHT_CYAN}{i}.{C.RESET} {model[:40]}")
+        print(f"      {C.DIM}Current key: {assigned}{C.RESET}")
+    
+    print(f"  {C.BRIGHT_CYAN}5.{C.RESET} Custom model ID")
+    print(f"  {C.BRIGHT_CYAN}0.{C.RESET} Cancel")
+    
+    choice = input(f"\n{C.BRIGHT_GREEN}Select: {C.RESET}").strip()
+    
+    if choice == '0':
+        return
+    elif choice == '5':
+        model = input(f"{C.CYAN}Enter model ID: {C.RESET}").strip()
+        if not model:
+            return
+    elif choice.isdigit() and 1 <= int(choice) <= 4:
+        model = models[int(choice)-1]
+    else:
+        return
+    
+    print(f"\n{C.BRIGHT_GREEN}Select API key to assign:{C.RESET}\n")
+    for i, name in enumerate(keys, 1):
+        print(f"  {C.BRIGHT_CYAN}{i}.{C.RESET} {name}")
+    
+    key_choice = input(f"\n{C.BRIGHT_GREEN}Select: {C.RESET}").strip()
+    
+    if key_choice.isdigit() and 1 <= int(key_choice) <= len(keys):
+        key_name = keys[int(key_choice)-1]
+        result, msg = api_manager.assign_key_to_model(model, key_name)
+        if result:
+            print(f"\n{C.BRIGHT_GREEN}✅ {msg}{C.RESET}")
+        else:
+            print(f"\n{C.BRIGHT_RED}❌ {msg}{C.RESET}")
+    
+    input(f"\n{C.DIM}Press Enter...{C.RESET}")
+
+def test_api_key():
+    print_banner()
+    print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
+    print(f"║{C.BRIGHT_WHITE}              🧪 TEST API KEY                   {C.BRIGHT_CYAN}║")
+    print(f"╚{'═' * 58}╝{C.RESET}")
+    
+    keys = api_manager.list_keys()
+    if not keys:
+        print(f"\n{C.BRIGHT_YELLOW}⚠ No API keys to test{C.RESET}")
+        print(f"\n{C.CYAN}You can also test a custom key:{C.RESET}")
+        custom = input(f"{C.BRIGHT_GREEN}Enter key to test (or press Enter): {C.RESET}").strip()
+        if custom:
+            print(f"\n{C.YELLOW}Testing...{C.RESET}")
+            success, message = api_manager.test_key(custom)
+            if success:
+                print(f"\n{C.BRIGHT_GREEN}✅ {message}{C.RESET}")
+            else:
+                print(f"\n{C.BRIGHT_RED}❌ {message}{C.RESET}")
+        input(f"\n{C.DIM}Press Enter...{C.RESET}")
+        return
+    
+    print(f"\n{C.BRIGHT_GREEN}Select key to test:{C.RESET}\n")
+    for i, name in enumerate(keys, 1):
+        print(f"  {C.BRIGHT_CYAN}{i}.{C.RESET} {name}")
+    print(f"  {C.BRIGHT_CYAN}0.{C.RESET} Test custom key")
+    
+    choice = input(f"\n{C.BRIGHT_GREEN}Select: {C.RESET}").strip()
+    
+    if choice == '0':
+        custom = input(f"{C.CYAN}Enter key to test: {C.RESET}").strip()
+        if custom:
+            print(f"\n{C.YELLOW}Testing...{C.RESET}")
+            success, message = api_manager.test_key(custom)
+            if success:
+                print(f"\n{C.BRIGHT_GREEN}✅ {message}{C.RESET}")
+            else:
+                print(f"\n{C.BRIGHT_RED}❌ {message}{C.RESET}")
+    elif choice.isdigit() and 1 <= int(choice) <= len(keys):
+        name = keys[int(choice)-1]
+        info = api_manager.get_key_info(name)
+        if info:
+            print(f"\n{C.YELLOW}Testing key '{name}'...{C.RESET}")
+            success, message = api_manager.test_key(api_manager.keys[name]['key'])
+            if success:
+                print(f"\n{C.BRIGHT_GREEN}✅ {message}{C.RESET}")
+            else:
+                print(f"\n{C.BRIGHT_RED}❌ {message}{C.RESET}")
+    
+    input(f"\n{C.DIM}Press Enter...{C.RESET}")
+
+def view_key_details():
+    print_banner()
+    print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
+    print(f"║{C.BRIGHT_WHITE}              📋 KEY DETAILS                   {C.BRIGHT_CYAN}║")
+    print(f"╚{'═' * 58}╝{C.RESET}")
+    
+    keys = api_manager.list_keys()
+    if not keys:
+        print(f"\n{C.BRIGHT_YELLOW}⚠ No API keys configured{C.RESET}")
+        input(f"\n{C.DIM}Press Enter...{C.RESET}")
+        return
+    
+    print(f"\n{C.BRIGHT_GREEN}Select key:{C.RESET}\n")
+    for i, name in enumerate(keys, 1):
+        print(f"  {C.BRIGHT_CYAN}{i}.{C.RESET} {name}")
+    
+    choice = input(f"\n{C.BRIGHT_GREEN}Select: {C.RESET}").strip()
+    
+    if choice.isdigit() and 1 <= int(choice) <= len(keys):
+        name = keys[int(choice)-1]
+        info = api_manager.get_key_info(name)
+        if info:
+            print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
+            print(f"║{C.BRIGHT_WHITE} Key: {name:<52}{C.BRIGHT_CYAN}║")
+            print(f"╠{'═' * 58}╣")
+            print(f"║  Created: {info['created']:<49}{C.BRIGHT_CYAN}║")
+            print(f"║  Last Used: {info['last_used']:<48}{C.BRIGHT_CYAN}║")
+            print(f"║  Assigned to: {', '.join(info['assigned_to']) if info['assigned_to'] else 'None':<46}{C.BRIGHT_CYAN}║")
+            print(f"║  Key Value: {info.get('key', '')[:20]}...{' ' * (35 - len(info.get('key', '')[:20]))}{C.BRIGHT_CYAN}║")
+            print(f"╚{'═' * 58}╝{C.RESET}")
+    
+    input(f"\n{C.DIM}Press Enter...{C.RESET}")
 
 # ==================== FEATURE FUNCTIONS ====================
 def copy_to_clipboard(text):
@@ -495,7 +775,10 @@ def save_current_chat():
 
 def load_chat_session():
     global HISTORY
-    sessions = files.list_chats()
+    if not os.path.exists(files.chats_dir):
+        return f"{C.YELLOW}⚠ No saved chats{C.RESET}"
+    
+    sessions = [f.replace('.json', '') for f in os.listdir(files.chats_dir) if f.endswith('.json')]
     if not sessions:
         return f"{C.YELLOW}⚠ No saved chats{C.RESET}"
     
@@ -514,7 +797,7 @@ def load_chat_session():
         pass
     return f"{C.YELLOW}Cancelled{C.RESET}"
 
-# ==================== DUAL MODE CHAT ====================
+# ==================== DUAL MODE & TURBO ====================
 def dual_mode_chat(user_input, system_prompt):
     print(f"\n{C.BRIGHT_CYAN}🔥 DUAL MODE: Comparing responses...{C.RESET}\n")
     
@@ -573,10 +856,12 @@ def turbo_rewrite(text):
 
 # ==================== MAIN CHAT ====================
 def ai_chat():
-    global API_KEY, HISTORY, CURRENT_MODEL, SECONDARY_MODEL, CUSTOM_PROMPT, DUAL_MODE
+    global HISTORY, CURRENT_MODEL, SECONDARY_MODEL, CUSTOM_PROMPT, DUAL_MODE
     
-    if not API_KEY:
-        print(f"\n{C.RED}❌ No API key! Configure in main menu (option 3){C.RESET}")
+    # Check if API keys exist
+    if not api_manager.list_keys():
+        print(f"\n{C.BRIGHT_RED}❌ No API keys configured!{C.RESET}")
+        print(f"{C.YELLOW}Please add an API key in Settings → API Key Manager{C.RESET}")
         input("\nPress Enter...")
         return
     
@@ -589,10 +874,15 @@ def ai_chat():
         mode_icon = "🔥" if DUAL_MODE else "🔄"
         mode_text = "DUAL MODE" if DUAL_MODE else "SINGLE MODE"
         
+        # Get key status
+        key_count = len(api_manager.list_keys())
+        key_status = f"{C.BRIGHT_GREEN}{key_count} key(s){C.RESET}" if key_count > 0 else f"{C.BRIGHT_RED}No keys{C.RESET}"
+        
         print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
         print(f"║{C.BRIGHT_WHITE}  Model: {CURRENT_MODEL[:35]}{' ' * (20 - len(CURRENT_MODEL[:35]))}{C.BRIGHT_CYAN}║")
         print(f"║{C.BRIGHT_YELLOW}  {mode_icon} {mode_text}{' ' * (48 - len(mode_text))}{C.BRIGHT_CYAN}║")
         print(f"║{C.BRIGHT_GREEN}  💬 {len(HISTORY)//2} exchanges | 💾 {len(cache.cache)} cached{C.BRIGHT_CYAN}{' ' * (15 - len(str(len(cache.cache))))}║")
+        print(f"║{C.BRIGHT_MAGENTA}  🔑 {key_status}{' ' * (57 - len(key_status))}{C.BRIGHT_CYAN}║")
         if DUAL_MODE:
             print(f"║{C.BRIGHT_MAGENTA}  🔀 Secondary: {SECONDARY_MODEL[:30]}{' ' * (25 - len(SECONDARY_MODEL[:30]))}{C.BRIGHT_CYAN}║")
         print(f"╚{'═' * 58}╝{C.RESET}")
@@ -729,25 +1019,6 @@ def ai_chat():
         input(f"{C.DIM}[Enter] continue  |  /help  |  /dual  |  /quit{C.RESET}")
 
 # ==================== SETTINGS MENUS ====================
-def api_settings():
-    global API_KEY
-    print_banner()
-    print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
-    print(f"║{C.BRIGHT_WHITE}                 API CONFIGURATION                {C.BRIGHT_CYAN}║")
-    print(f"╚{'═' * 58}╝{C.RESET}")
-    
-    current = API_KEY[:15] + "..." if len(API_KEY) > 20 else "Not set"
-    print(f"\n{C.YELLOW}Current key: {C.GREEN}{current}{C.RESET}")
-    print(f"{C.CYAN}Get free key: https://openrouter.ai/keys{C.RESET}")
-    print(f"\n{C.BRIGHT_WHITE}Enter new API key (or press Enter to keep):{C.RESET}")
-    new_key = input(f"{C.BRIGHT_GREEN}> {C.RESET}").strip()
-    
-    if new_key:
-        API_KEY = new_key
-        save_config()
-        print(f"\n{C.GREEN}✓ API key saved!{C.RESET}")
-    input(f"\n{C.DIM}Press Enter...{C.RESET}")
-
 def switch_model():
     global CURRENT_MODEL
     print_banner()
@@ -757,9 +1028,9 @@ def switch_model():
     
     models = [
         ("1", "openrouter/free", "Fastest, auto-select"),
-        ("2", "google/gemini-2.0-flash-lite:free", "Google Gemini (fast)"),
+        ("2", "google/gemini-2.0-flash-lite-preview-02-05:free", "Google Gemini (fast)"),
         ("3", "deepseek/deepseek-chat:free", "DeepSeek (coding)"),
-        ("4", "qwen/qwen-2.5-coder-32b:free", "Qwen Coder (expert)"),
+        ("4", "qwen/qwen-2.5-coder-32b-instruct:free", "Qwen Coder (expert)"),
     ]
     
     print(f"\n{C.YELLOW}Current: {C.GREEN}{CURRENT_MODEL}{C.RESET}\n")
@@ -828,6 +1099,11 @@ def dual_mode_settings():
         print(f"\n{C.GREEN}✓ Dual Mode {'ENABLED' if DUAL_MODE else 'DISABLED'}{C.RESET}")
         input(f"\n{C.DIM}Press Enter...{C.RESET}")
     elif choice == '2':
+        print(f"\n{C.CYAN}Models you can use:{C.RESET}")
+        print(f"  {C.DIM}1. openrouter/free{C.RESET}")
+        print(f"  {C.DIM}2. google/gemini-2.0-flash-lite:free{C.RESET}")
+        print(f"  {C.DIM}3. deepseek/deepseek-chat:free{C.RESET}")
+        print(f"  {C.DIM}4. qwen/qwen-2.5-coder-32b:free{C.RESET}")
         print(f"\n{C.CYAN}Enter secondary model ID:{C.RESET}")
         new_model = input(f"{C.BRIGHT_GREEN}> {C.RESET}").strip()
         if new_model:
@@ -852,15 +1128,24 @@ def update_menu():
     
     if choice == '1':
         print(f"\n{C.YELLOW}Checking...{C.RESET}")
-        update, latest = check_for_updates(force=True)
-        if update:
-            print(f"{C.GREEN}✓ Update available! v{latest}{C.RESET}")
-        else:
-            print(f"{C.GREEN}✓ You're on the latest version!{C.RESET}")
+        try:
+            url = f"https://api.github.com/repos/{GITHUB_USER}/TerminusAI/releases/latest"
+            req = urllib.request.Request(url, headers={'User-Agent': 'TerminusAI'})
+            with urllib.request.urlopen(req, timeout=5) as response:
+                data = json.loads(response.read().decode())
+                latest = data.get('tag_name', '').replace('v', '')
+                if latest > VERSION:
+                    print(f"{C.GREEN}✓ Update available! v{latest}{C.RESET}")
+                else:
+                    print(f"{C.GREEN}✓ You're on the latest version!{C.RESET}")
+        except:
+            print(f"{C.RED}❌ Could not check for updates{C.RESET}")
         input(f"\n{C.DIM}Press Enter...{C.RESET}")
     elif choice == '2':
         print(f"\n{C.CYAN}📋 Changelog v{VERSION}:{C.RESET}")
-        print(f"{C.GREEN}  • Complete rewrite with bug fixes{C.RESET}")
+        print(f"{C.GREEN}  • Professional API Key Manager{C.RESET}")
+        print(f"{C.GREEN}  • Assign keys to specific models{C.RESET}")
+        print(f"{C.GREEN}  • Test API keys before saving{C.RESET}")
         print(f"{C.GREEN}  • Beautiful new menu system{C.RESET}")
         print(f"{C.GREEN}  • Dual AI Mode (/dual){C.RESET}")
         print(f"{C.GREEN}  • Turbo Mode (/turbo){C.RESET}")
@@ -915,6 +1200,8 @@ def about():
     print(f"║{C.BRIGHT_WHITE}                   ABOUT                       {C.BRIGHT_CYAN}║")
     print(f"╚{'═' * 58}╝{C.RESET}")
     
+    key_count = len(api_manager.list_keys())
+    
     print(f"""
 {C.BRIGHT_GREEN}{APP_NAME} v{VERSION}{C.RESET}
 {C.DIM}Your Terminal AI Companion{C.RESET}
@@ -924,6 +1211,7 @@ def about():
 {C.YELLOW}GitHub:{C.RESET} {REPO_URL}
 
 {C.BRIGHT_CYAN}Features:{C.RESET}
+  • {C.GREEN}🔑 Professional API Key Manager{C.RESET}
   • {C.GREEN}🔥 Dual AI Mode{C.RESET} - Compare 2 models
   • {C.GREEN}⚡ Turbo Mode{C.RESET} - Enhance responses
   • {C.GREEN}🔄 Update Checker{C.RESET} - Auto updates
@@ -932,6 +1220,8 @@ def about():
   • {C.GREEN}🌤️ Weather{C.RESET} - Real-time
   • {C.GREEN}📋 Clipboard{C.RESET} - Copy/Paste
   • {C.GREEN}💾 Save/Load{C.RESET} - Chats
+
+{C.BRIGHT_MAGENTA}API Keys: {C.GREEN}{key_count} configured{C.RESET}
 
 {C.DIM}All data stored in: ~/.terminusai/{C.RESET}
 """)
@@ -959,46 +1249,28 @@ def check_and_install_dependencies():
     print(f"\n{C.YELLOW}⚡ Installing dependencies...{C.RESET}")
     subprocess.run(['pkg', 'install', 'python', '-y'], capture_output=True)
     
-    print(f"\n{C.CYAN}🔑 OpenRouter API Key:{C.RESET}")
-    print(f"{C.DIM}Get free key: https://openrouter.ai/keys{C.RESET}")
-    api_key = input(f"\n{C.BRIGHT_GREEN}> {C.RESET}").strip()
+    print(f"\n{C.BRIGHT_GREEN}✅ Setup complete!{C.RESET}")
+    print(f"\n{C.CYAN}Next steps:{C.RESET}")
+    print(f"  1. Go to {C.BRIGHT_YELLOW}API Key Manager{C.RESET} (Option 3)")
+    print(f"  2. Add your OpenRouter API key")
+    print(f"  3. Start chatting!")
     
-    if api_key:
-        config = files.get_config()
-        config['api_key'] = api_key
-        config['model'] = "openrouter/free"
-        config['version'] = VERSION
-        config['dual_mode'] = False
-        files.save_config(config)
-        print(f"\n{C.GREEN}✓ Setup complete!{C.RESET}")
-    
-    time.sleep(1)
+    time.sleep(2)
 
 # ==================== MAIN MENU ====================
 def main_menu():
-    global API_KEY, DUAL_MODE
-    
-    menu_items = [
-        ("1", "💬 Start Chat", C.BRIGHT_GREEN),
-        ("2", "🎨 Custom Prompt", C.BRIGHT_MAGENTA),
-        ("3", "🔑 API Settings", C.BRIGHT_BLUE),
-        ("4", "📡 Switch AI Model", C.BRIGHT_BLUE),
-        ("5", "🔥 Dual Mode Settings", C.BRIGHT_YELLOW),
-        ("6", "🔄 Update Checker", C.CYAN),
-        ("7", "💾 Storage Manager", C.BRIGHT_YELLOW),
-        ("8", "ℹ️  About", C.BRIGHT_WHITE),
-        ("9", "🚪 Exit", C.BRIGHT_RED),
-    ]
-    
-    status_icon = "✅" if API_KEY else "❌"
-    status_color = C.GREEN if API_KEY else C.RED
-    mode_icon = "🔥" if DUAL_MODE else "🔄"
+    global DUAL_MODE
     
     while True:
         print_banner()
         
+        key_count = len(api_manager.list_keys())
+        key_icon = "✅" if key_count > 0 else "❌"
+        key_color = C.GREEN if key_count > 0 else C.RED
+        mode_icon = "🔥" if DUAL_MODE else "🔄"
+        
         print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
-        print(f"║{C.BRIGHT_WHITE}  {status_icon} API: {status_color}{API_KEY[:20] if API_KEY else 'Not configured'}{' ' * (30 - len(API_KEY[:20] if API_KEY else 'Not configured'))}{C.BRIGHT_CYAN}║")
+        print(f"║{C.BRIGHT_WHITE}  {key_icon} API Keys: {key_color}{key_count} configured{' ' * (33 - len(str(key_count)))}{C.BRIGHT_CYAN}║")
         print(f"║{C.BRIGHT_YELLOW}  {mode_icon} Mode: {'DUAL' if DUAL_MODE else 'SINGLE'}{' ' * 49}{C.BRIGHT_CYAN}║")
         print(f"║{C.BRIGHT_GREEN}  📡 Model: {CURRENT_MODEL[:35]}{' ' * (20 - len(CURRENT_MODEL[:35]))}{C.BRIGHT_CYAN}║")
         print(f"║{C.BRIGHT_MAGENTA}  💾 Cache: {len(cache.cache)} items{' ' * 48}{C.BRIGHT_CYAN}║")
@@ -1007,10 +1279,15 @@ def main_menu():
         print(f"\n{C.BRIGHT_CYAN}╔{'═' * 58}╗")
         print(f"║{C.BRIGHT_WHITE}                    MAIN MENU                     {C.BRIGHT_CYAN}║")
         print(f"╠{'═' * 58}╣{C.RESET}")
-        
-        for key, label, color in menu_items:
-            print(f"║  {color}{key}{C.RESET}. {label:<52}{C.BRIGHT_CYAN}║{C.RESET}")
-        
+        print(f"║  {C.BRIGHT_GREEN}1.{C.RESET} 💬 Start Chat                          {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_MAGENTA}2.{C.RESET} 🎨 Custom Prompt                      {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_YELLOW}3.{C.RESET} 🔑 API Key Manager                    {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_BLUE}4.{C.RESET} 📡 Switch AI Model                    {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_CYAN}5.{C.RESET} 🔥 Dual Mode Settings                 {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_CYAN}6.{C.RESET} 🔄 Update Checker                     {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_YELLOW}7.{C.RESET} 💾 Storage Manager                    {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_WHITE}8.{C.RESET} ℹ️  About                             {C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"║  {C.BRIGHT_RED}9.{C.RESET} 🚪 Exit                              {C.BRIGHT_CYAN}║{C.RESET}")
         print(f"╚{'═' * 58}╝{C.RESET}")
         
         choice = input(f"\n{C.BRIGHT_GREEN}┌─[SELECT]─► {C.RESET}")
@@ -1020,13 +1297,11 @@ def main_menu():
         elif choice == '2':
             custom_prompt()
         elif choice == '3':
-            api_settings()
-            load_config()
+            api_key_manager_menu()
         elif choice == '4':
             switch_model()
         elif choice == '5':
             dual_mode_settings()
-            load_config()
         elif choice == '6':
             update_menu()
         elif choice == '7':
@@ -1034,14 +1309,11 @@ def main_menu():
         elif choice == '8':
             about()
         elif choice == '9':
-            conn_pool.close()
             print(f"\n{C.BRIGHT_GREEN}Goodbye! 👋{C.RESET}")
             sys.exit()
 
 # ==================== ENTRY POINT ====================
 def main():
-    global API_KEY, DUAL_MODE
-    
     if not os.path.exists(files.config_file):
         check_and_install_dependencies()
     
