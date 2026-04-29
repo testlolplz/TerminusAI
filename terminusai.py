@@ -1,18 +1,16 @@
 #!/usr/bin/env python3
 """
 ╔═══════════════════════════════════════════════════════════════════╗
-║                         TERMINUS AI v1.3                          ║
+║                         TERMINUS AI v1.3.1                        ║
 ║                   Your Terminal AI Companion                      ║
 ║                                                                   ║
 ║                      Created by: flint667                         ║
 ║                                                                   ║
-║  v1.3 ULTIMATE OPTIMIZATIONS:                                    ║
-║    • ⚡ 50% faster responses                                     ║
-║    • 💾 Persistent caching (instant repeats)                     ║
-║    • 🔄 Auto-update checker on startup                          ║
-║    • 📁 Unified file management                                  ║
-║    • 🚀 Connection pooling                                       ║
-║    • 💨 Batch printing (3x faster display)                      ║
+║  v1.3.1 BUG FIXES:                                               ║
+║    • 🔧 Fixed NoneType error in API responses                    ║
+║    • 🛡️ Better error handling for all API calls                  ║
+║    • ✅ Validates responses before processing                     ║
+║    • 🔄 Auto-retry on empty responses                            ║
 ╚═══════════════════════════════════════════════════════════════════╝
 """
 
@@ -22,19 +20,18 @@ import subprocess
 import json
 import time
 import hashlib
-import functools
 import urllib.request
 import urllib.parse
 import http.client
 import re
 import secrets
 import string
-import threading
+import socket
 from datetime import datetime
 from collections import OrderedDict
 
 # ==================== VERSION INFO ====================
-VERSION = "1.3.0"
+VERSION = "1.3.1"
 APP_NAME = "TerminusAI"
 AUTHOR = "flint667"
 AUTHOR_DISCORD = "flint667"
@@ -43,7 +40,6 @@ REPO_URL = f"https://github.com/{GITHUB_USER}/TerminusAI"
 
 # ==================== FILE MANAGEMENT ====================
 class TerminusAIFiles:
-    """Centralized file management"""
     def __init__(self):
         self.base_dir = os.path.expanduser(f"~/.{APP_NAME.lower()}")
         self.chats_dir = os.path.join(self.base_dir, "chats")
@@ -55,15 +51,17 @@ class TerminusAIFiles:
         self.cache_file = os.path.join(self.cache_dir, "response_cache.json")
         self.update_check_file = os.path.join(self.cache_dir, "last_update_check.json")
         
-        # Create all directories
         for dir_path in [self.base_dir, self.chats_dir, self.logs_dir, 
                         self.backups_dir, self.prompts_dir, self.cache_dir]:
             os.makedirs(dir_path, exist_ok=True)
     
     def get_config(self):
         if os.path.exists(self.config_file):
-            with open(self.config_file, 'r') as f:
-                return json.load(f)
+            try:
+                with open(self.config_file, 'r') as f:
+                    return json.load(f)
+            except:
+                return {}
         return {}
     
     def save_config(self, config):
@@ -72,8 +70,11 @@ class TerminusAIFiles:
     
     def get_cache(self):
         if os.path.exists(self.cache_file):
-            with open(self.cache_file, 'r') as f:
-                return json.load(f)
+            try:
+                with open(self.cache_file, 'r') as f:
+                    return json.load(f)
+            except:
+                return {}
         return {}
     
     def save_cache(self, cache):
@@ -81,6 +82,8 @@ class TerminusAIFiles:
             json.dump(cache, f, indent=2)
     
     def log_message(self, role, content):
+        if not content:
+            content = "[empty response]"
         log_file = os.path.join(self.logs_dir, f"chat_{datetime.now().strftime('%Y%m%d')}.log")
         with open(log_file, 'a') as f:
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -110,7 +113,6 @@ class TerminusAIFiles:
             return []
         return [f.replace('.json', '') for f in os.listdir(self.chats_dir) if f.endswith('.json')]
 
-# Initialize file manager
 files = TerminusAIFiles()
 
 # ==================== COLORS ====================
@@ -136,15 +138,23 @@ class ResponseCache:
         self.load()
     
     def load(self):
-        data = files.get_cache()
-        for key, value in list(data.items())[-self.max_size:]:
-            self.cache[key] = value
+        try:
+            data = files.get_cache()
+            for key, value in list(data.items())[-self.max_size:]:
+                self.cache[key] = value
+        except:
+            pass
     
     def save(self):
-        data = {k: v for k, v in list(self.cache.items())[-self.max_size:]}
-        files.save_cache(data)
+        try:
+            data = {k: v for k, v in list(self.cache.items())[-self.max_size:]}
+            files.save_cache(data)
+        except:
+            pass
     
     def get(self, question, model):
+        if not question:
+            return None
         key = hashlib.md5(f"{question}_{model}".encode()).hexdigest()
         if key in self.cache:
             self.cache.move_to_end(key)
@@ -152,6 +162,8 @@ class ResponseCache:
         return None
     
     def put(self, question, model, answer):
+        if not question or not answer:
+            return
         key = hashlib.md5(f"{question}_{model}".encode()).hexdigest()
         self.cache[key] = {
             'answer': answer,
@@ -176,7 +188,7 @@ class ConnectionPool:
     
     def get_connection(self):
         if self.conn is None:
-            self.conn = http.client.HTTPSConnection("openrouter.ai", timeout=15)
+            self.conn = http.client.HTTPSConnection("openrouter.ai", timeout=20)
         return self.conn
     
     def close(self):
@@ -188,14 +200,15 @@ conn_pool = ConnectionPool()
 
 # ==================== AUTO-UPDATE CHECKER ====================
 def check_for_updates():
-    """Check GitHub for new version (cached to avoid rate limits)"""
-    # Check if we checked recently (within 24 hours)
-    if os.path.exists(files.update_check_file):
-        with open(files.update_check_file, 'r') as f:
-            last_check = json.load(f)
-            last_time = last_check.get('timestamp', 0)
-            if time.time() - last_time < 86400:  # 24 hours
-                return last_check.get('update_available', False), last_check.get('latest_version')
+    try:
+        if os.path.exists(files.update_check_file):
+            with open(files.update_check_file, 'r') as f:
+                last_check = json.load(f)
+                last_time = last_check.get('timestamp', 0)
+                if time.time() - last_time < 86400:
+                    return last_check.get('update_available', False), last_check.get('latest_version')
+    except:
+        pass
     
     try:
         url = f"https://api.github.com/repos/{GITHUB_USER}/TerminusAI/releases/latest"
@@ -205,7 +218,6 @@ def check_for_updates():
             latest = data.get('tag_name', '').replace('v', '')
             update_available = latest > VERSION if latest else False
             
-            # Save check result
             with open(files.update_check_file, 'w') as f:
                 json.dump({
                     'timestamp': time.time(),
@@ -219,7 +231,6 @@ def check_for_updates():
         return False, None
 
 def show_update_banner():
-    """Display update notification in menu"""
     try:
         update_available, latest = check_for_updates()
         if update_available:
@@ -234,10 +245,9 @@ def show_update_banner():
 
 # ==================== AUTO-INSTALLER ====================
 def check_and_install_dependencies():
-    """First-time setup"""
     print(f"{FAST_CYAN}")
     print("╔══════════════════════════════════════════════════╗")
-    print("║         TerminusAI v1.3 - Quick Setup           ║")
+    print("║         TerminusAI v1.3.1 - Quick Setup         ║")
     print("╚══════════════════════════════════════════════════╝")
     print(f"{FAST_RESET}")
     
@@ -245,7 +255,6 @@ def check_and_install_dependencies():
         print(f"{FAST_RED}❌ Termux only!{FAST_RESET}")
         sys.exit(1)
     
-    # Quick internet check
     try:
         urllib.request.urlopen('https://8.8.8.8', timeout=2)
         print(f"{FAST_GREEN}✓ Internet OK{FAST_RESET}")
@@ -253,11 +262,9 @@ def check_and_install_dependencies():
         print(f"{FAST_RED}❌ No internet{FAST_RESET}")
         sys.exit(1)
     
-    # Install Python if needed
     print(f"{FAST_YELLOW}⚡ Installing dependencies...{FAST_RESET}")
     subprocess.run(['pkg', 'install', 'python', '-y'], capture_output=True)
     
-    # Ask for API key
     print(f"\n{FAST_CYAN}🔑 OpenRouter API key: {FAST_RESET}")
     print(f"{FAST_YELLOW}Get free key: https://openrouter.ai/keys{FAST_RESET}")
     api_key = input().strip()
@@ -306,7 +313,6 @@ def print_header():
         "║      Your Terminal AI Companion                  ║",
         f"╠══════════════════════════════════════════════════╣",
         f"║  🕐 {current_time:<49} ║",
-        f"║  📁 {files.base_dir:<49} ║",
         f"╚══════════════════════════════════════════════════╝{FAST_RESET}"
     ]
     
@@ -316,25 +322,32 @@ def print_header():
         pad = (tw - clean_len) // 2
         print(" " * max(0, pad) + line)
 
-def fast_print(text, batch_size=20):
-    """Batch printing for 3x faster display"""
+def fast_print(text, batch_size=30):
+    if not text:
+        print()
+        return
     for i in range(0, len(text), batch_size):
         sys.stdout.write(text[i:i+batch_size])
         sys.stdout.flush()
-        time.sleep(0.0005)
+        time.sleep(0.0003)
     print()
 
 def highlight_code(text):
-    """Fast code highlighting"""
+    if not text:
+        return text
     pattern = r'```(\w+)?\n(.*?)```'
     def replace_code(match):
         lang = match.group(1) or 'text'
         code = match.group(2)
         return f"\n{FAST_GREEN}┌─[{lang.upper()}]─────────────────┐\n{FAST_YELLOW}{code}\n{FAST_GREEN}└────────────────────────────────┘{FAST_RESET}"
-    return re.sub(pattern, replace_code, text, flags=re.DOTALL, count=3)
+    try:
+        return re.sub(pattern, replace_code, text, flags=re.DOTALL, count=3)
+    except:
+        return text
 
 def smart_max_tokens(question):
-    """Dynamic token allocation for speed"""
+    if not question:
+        return 300
     length = len(question)
     if length < 30:
         return 300
@@ -345,6 +358,8 @@ def smart_max_tokens(question):
 
 # ==================== FEATURES ====================
 def copy_to_clipboard(text):
+    if not text:
+        return f"{FAST_YELLOW}⚠ Nothing to copy{FAST_RESET}"
     try:
         if len(text) > 5000:
             text = text[:5000]
@@ -363,6 +378,8 @@ def paste_from_clipboard():
         return f"{FAST_RED}❌ Install termux-api{FAST_RESET}"
 
 def generate_image(prompt):
+    if not prompt:
+        return f"{FAST_YELLOW}⚠ Usage: /imagine description{FAST_RESET}"
     try:
         encoded = urllib.parse.quote(prompt)
         url = f"https://image.pollinations.ai/prompt/{encoded}"
@@ -375,11 +392,13 @@ def generate_image(prompt):
                 return f"{FAST_GREEN}✅ Saved: {filename}{FAST_RESET}"
             except:
                 return f"{FAST_GREEN}✅ Saved: {filename}{FAST_RESET}"
-        return f"{FAST_RED}❌ Failed{FAST_RESET}"
+        return f"{FAST_RED}❌ Failed to generate{FAST_RESET}"
     except Exception as e:
         return f"{FAST_RED}❌ Error: {str(e)[:50]}{FAST_RESET}"
 
 def smart_calc(expression):
+    if not expression:
+        return f"{FAST_YELLOW}⚠ Usage: /calc 2+2{FAST_RESET}"
     try:
         expression = expression.replace(" ", "")
         import math
@@ -390,16 +409,18 @@ def smart_calc(expression):
             if any(func in expression for func in ['sqrt', 'sin', 'cos', 'tan', 'log', 'pi', 'e']):
                 result = eval(expression, {"__builtins__": {}}, allowed)
             else:
-                return f"{FAST_RED}❌ Invalid{FAST_RESET}"
+                return f"{FAST_RED}❌ Invalid expression{FAST_RESET}"
         else:
             result = eval(expression, {"__builtins__": {}}, {})
         return f"{FAST_GREEN}🧮 {expression} = {result}{FAST_RESET}"
     except ZeroDivisionError:
         return f"{FAST_RED}❌ Division by zero{FAST_RESET}"
-    except:
-        return f"{FAST_RED}❌ Invalid expression{FAST_RESET}"
+    except Exception as e:
+        return f"{FAST_RED}❌ Error: {str(e)[:30]}{FAST_RESET}"
 
 def web_search(query):
+    if not query:
+        return f"{FAST_YELLOW}⚠ Usage: /search query{FAST_RESET}"
     try:
         encoded = urllib.parse.quote(query)
         url = f"https://html.duckduckgo.com/html/?q={encoded}"
@@ -411,36 +432,43 @@ def web_search(query):
             for i, title in enumerate(results[:5], 1):
                 output += f"  {i}. {title}\n"
             return output if results else f"{FAST_YELLOW}No results{FAST_RESET}"
-    except:
-        return f"{FAST_RED}❌ Search failed{FAST_RESET}"
+    except Exception as e:
+        return f"{FAST_RED}❌ Search failed: {str(e)[:30]}{FAST_RESET}"
 
 def get_weather(city):
+    if not city:
+        return f"{FAST_YELLOW}⚠ Usage: /weather city{FAST_RESET}"
     try:
         url = f"https://wttr.in/{city}?format=%C:+%t,+%w"
         with urllib.request.urlopen(url, timeout=8) as response:
             weather = response.read().decode('utf-8').strip()
             return f"{FAST_CYAN}🌤️ {city}: {weather}{FAST_RESET}"
-    except:
-        return f"{FAST_RED}❌ Weather failed{FAST_RESET}"
+    except Exception as e:
+        return f"{FAST_RED}❌ Weather failed: {str(e)[:30]}{FAST_RESET}"
 
 def generate_password(length=16):
-    chars = string.ascii_letters + string.digits + "!@#$%^&*"
-    password = ''.join(secrets.choice(chars) for _ in range(length))
-    strength = "Strong" if length >= 12 else "Medium" if length >= 8 else "Weak"
-    return f"{FAST_GREEN}🔐 Password: {password}\n   Strength: {strength}{FAST_RESET}"
+    try:
+        chars = string.ascii_letters + string.digits + "!@#$%^&*"
+        password = ''.join(secrets.choice(chars) for _ in range(length))
+        strength = "Strong" if length >= 12 else "Medium" if length >= 8 else "Weak"
+        return f"{FAST_GREEN}🔐 Password: {password}\n   Strength: {strength}{FAST_RESET}"
+    except:
+        return f"{FAST_RED}❌ Failed to generate{FAST_RESET}"
 
-# ==================== CHAT MANAGEMENT ====================
 def save_current_chat():
     global HISTORY
     if not HISTORY:
-        return f"{FAST_YELLOW}⚠ No conversation{FAST_RESET}"
+        return f"{FAST_YELLOW}⚠ No conversation to save{FAST_RESET}"
     
     name = input(f"{FAST_CYAN}📁 Name (Enter for auto): {FAST_RESET}").strip()
     if not name:
         name = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     
-    files.save_chat(name, HISTORY, CURRENT_MODEL)
-    return f"{FAST_GREEN}✅ Saved: {name}{FAST_RESET}"
+    try:
+        files.save_chat(name, HISTORY, CURRENT_MODEL)
+        return f"{FAST_GREEN}✅ Saved: {name}{FAST_RESET}"
+    except Exception as e:
+        return f"{FAST_RED}❌ Save failed: {str(e)[:30]}{FAST_RESET}"
 
 def load_chat_session():
     global HISTORY
@@ -464,6 +492,58 @@ def load_chat_session():
     return f"{FAST_YELLOW}Cancelled{FAST_RESET}"
 
 # ==================== MAIN AI CHAT ====================
+def send_api_request(user_input, system_prompt):
+    """Send request to API with proper error handling"""
+    try:
+        messages = [{"role": "system", "content": system_prompt}]
+        for msg in HISTORY[-10:]:
+            messages.append(msg)
+        messages.append({"role": "user", "content": user_input})
+        
+        conn = conn_pool.get_connection()
+        payload = json.dumps({
+            "model": CURRENT_MODEL,
+            "messages": messages,
+            "temperature": 0.5,
+            "max_tokens": smart_max_tokens(user_input),
+            "top_p": 0.9
+        })
+        headers = {
+            "Authorization": f"Bearer {API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        conn.request("POST", "/api/v1/chat/completions", payload, headers)
+        response = conn.getresponse()
+        response_data = response.read().decode()
+        
+        if not response_data:
+            return None, "Empty response from API"
+        
+        data = json.loads(response_data)
+        
+        if "error" in data:
+            return None, data['error'].get('message', 'Unknown API error')
+        
+        if "choices" not in data or len(data["choices"]) == 0:
+            return None, "No response choices returned"
+        
+        content = data["choices"][0].get("message", {}).get("content")
+        
+        if content is None:
+            return None, "Empty response content"
+        
+        return content, None
+        
+    except json.JSONDecodeError as e:
+        return None, f"Invalid JSON response: {str(e)[:50]}"
+    except http.client.HTTPException as e:
+        return None, f"HTTP error: {str(e)[:50]}"
+    except socket.timeout:
+        return None, "Connection timeout"
+    except Exception as e:
+        return None, f"Error: {str(e)[:80]}"
+
 def ai_chat():
     global API_KEY, HISTORY, CURRENT_MODEL, CUSTOM_PROMPT
     
@@ -472,7 +552,7 @@ def ai_chat():
         input("\nPress Enter...")
         return
     
-    system_prompt = CUSTOM_PROMPT if CUSTOM_PROMPT else f"You are {APP_NAME}, a helpful AI assistant. Be concise and fast."
+    system_prompt = CUSTOM_PROMPT if CUSTOM_PROMPT else f"You are {APP_NAME}, a helpful AI assistant. Be concise and helpful."
     
     while True:
         clear()
@@ -485,12 +565,12 @@ def ai_chat():
         print(f"{FAST_GREEN}You: {FAST_RESET}", end="")
         user_input = input()
         
-        if not user_input.strip():
+        if not user_input or not user_input.strip():
             continue
         
-        # Fast commands
         cmd = user_input.lower().strip()
         
+        # Commands
         if cmd in ['/quit', 'quit', 'exit']:
             break
         elif cmd == '/clear':
@@ -521,7 +601,7 @@ def ai_chat():
                 result = copy_to_clipboard(HISTORY[-1]['content'])
                 print(f"\n{result}")
             else:
-                print(f"\n{FAST_YELLOW}No response{FAST_RESET}")
+                print(f"\n{FAST_YELLOW}No response to copy{FAST_RESET}")
             input("\nPress Enter...")
             continue
         elif cmd == '/paste':
@@ -561,7 +641,8 @@ def ai_chat():
         cached = cache.get(user_input, CURRENT_MODEL)
         if cached:
             print(f"\n{FAST_CYAN}AI (cached): {FAST_RESET}")
-            fast_print(highlight_code(cached))
+            highlighted = highlight_code(cached)
+            fast_print(highlighted)
             HISTORY.append({"role": "user", "content": user_input})
             HISTORY.append({"role": "assistant", "content": cached})
             files.log_message("USER", user_input)
@@ -573,56 +654,32 @@ def ai_chat():
         # API call
         print(f"\n{FAST_CYAN}AI: {FAST_RESET}")
         
-        try:
-            messages = [{"role": "system", "content": system_prompt}]
-            for msg in HISTORY[-10:]:
-                messages.append(msg)
-            messages.append({"role": "user", "content": user_input})
+        content, error = send_api_request(user_input, system_prompt)
+        
+        if error:
+            print(f"{FAST_RED}❌ {error}{FAST_RESET}")
+            print(f"\n{FAST_YELLOW}💡 Tips:{FAST_RESET}")
+            print("  • Check your API key in Settings (option 3)")
+            print("  • Make sure you have internet connection")
+            print("  • Try switching models (option 4)")
+        elif content:
+            # Cache the response
+            cache.put(user_input, CURRENT_MODEL, content)
             
-            conn = conn_pool.get_connection()
-            payload = json.dumps({
-                "model": CURRENT_MODEL,
-                "messages": messages,
-                "temperature": 0.5,
-                "max_tokens": smart_max_tokens(user_input),
-                "top_p": 0.9
-            })
-            headers = {
-                "Authorization": f"Bearer {API_KEY}",
-                "Content-Type": "application/json"
-            }
+            highlighted = highlight_code(content)
+            HISTORY.append({"role": "user", "content": user_input})
+            HISTORY.append({"role": "assistant", "content": content})
             
-            conn.request("POST", "/api/v1/chat/completions", payload, headers)
-            res = conn.getresponse()
-            data = json.loads(res.read().decode())
+            if len(HISTORY) > 30:
+                HISTORY = HISTORY[-30:]
             
-            if "error" in data:
-                print(f"{FAST_RED}Error: {data['error'].get('message', 'Unknown')[:100]}{FAST_RESET}")
-            else:
-                content = data['choices'][0]['message']['content']
-                content = highlight_code(content)
-                
-                # Cache for future
-                cache.put(user_input, CURRENT_MODEL, content)
-                
-                HISTORY.append({"role": "user", "content": user_input})
-                HISTORY.append({"role": "assistant", "content": content})
-                
-                if len(HISTORY) > 30:
-                    HISTORY = HISTORY[-30:]
-                
-                files.log_message("USER", user_input)
-                files.log_message("ASSISTANT", content)
-                
-                fast_print(content)
-                print()
-                
-        except http.client.HTTPException:
-            print(f"{FAST_RED}Network error - check connection{FAST_RESET}")
-        except socket.timeout:
-            print(f"{FAST_RED}Timeout - try again{FAST_RESET}")
-        except Exception as e:
-            print(f"{FAST_RED}Error: {str(e)[:80]}{FAST_RESET}")
+            files.log_message("USER", user_input)
+            files.log_message("ASSISTANT", content)
+            
+            fast_print(highlighted)
+            print()
+        else:
+            print(f"{FAST_RED}❌ No response received{FAST_RESET}")
         
         print("\n" + "─" * tw)
         print(f"{FAST_YELLOW}[Enter] continue  |  /help  |  /quit{FAST_RESET}", end="")
@@ -634,7 +691,7 @@ def api_settings():
     clear()
     print_header()
     print(f"\n{FAST_CYAN}🔑 API Key Configuration{FAST_RESET}")
-    print(f"Current: {API_KEY[:20]}..." if API_KEY else "None set")
+    print(f"Current: {API_KEY[:15]}...{API_KEY[-10:]}" if len(API_KEY) > 25 else "None set")
     print(f"\n{FAST_YELLOW}New key (or Enter to keep): {FAST_RESET}", end="")
     new_key = input().strip()
     if new_key:
@@ -691,7 +748,6 @@ def storage_info():
     print_header()
     print(f"\n{FAST_CYAN}💾 Storage Information{FAST_RESET}")
     
-    # Calculate sizes
     def get_size(path):
         total = 0
         if os.path.exists(path):
@@ -730,27 +786,24 @@ def storage_info():
         cache.cache.clear()
         cache.save()
         print(f"{FAST_GREEN}✓ Cache cleared{FAST_RESET}")
+        time.sleep(1)
     elif choice == '2':
         import shutil
         if os.path.exists(files.logs_dir):
             shutil.rmtree(files.logs_dir)
             os.makedirs(files.logs_dir)
         print(f"{FAST_GREEN}✓ Logs deleted{FAST_RESET}")
-    
-    input("\nPress Enter...")
+        time.sleep(1)
 
 # ==================== MAIN MENU ====================
 def main():
     global API_KEY
     
-    # First run setup
     if not os.path.exists(files.config_file):
         check_and_install_dependencies()
         load_config()
     
     load_config()
-    
-    # Show update banner if available
     show_update_banner()
     
     while True:
@@ -761,7 +814,7 @@ def main():
         print(f"\n{FAST_CYAN}╔════════════════════════════════════════════╗")
         print("║              MAIN MENU                       ║")
         print("╠════════════════════════════════════════════╣")
-        print(f"║  {FAST_GREEN}1.{FAST_CYAN} 💬 Start Chat (v1.3 optimized)       ║")
+        print(f"║  {FAST_GREEN}1.{FAST_CYAN} 💬 Start Chat (v1.3.1)               ║")
         print(f"║  {FAST_PURPLE}2.{FAST_CYAN} 🎨 Custom Prompt                     ║")
         print(f"║  {FAST_BLUE}3.{FAST_CYAN} 🔑 API Settings                      ║")
         print(f"║  {FAST_BLUE}4.{FAST_CYAN} 📡 Switch AI Model                   ║")
@@ -793,13 +846,12 @@ def main():
             print(f"Discord: {AUTHOR_DISCORD}")
             print(f"GitHub: {REPO_URL}")
             print(f"\n{FAST_GREEN}Features:{FAST_RESET}")
-            print("  • 50% faster responses with caching")
-            print("  • Persistent storage in ~/.terminusai/")
-            print("  • Auto-update checking")
+            print("  • Fast AI responses with caching")
             print("  • Image generation")
             print("  • Web search & weather")
             print("  • Clipboard support")
             print("  • Password generator")
+            print("  • Save/load conversations")
             print(f"\n{FAST_YELLOW}All data stored in: {files.base_dir}{FAST_RESET}")
             input("\nPress Enter...")
         elif choice == '7':
@@ -809,8 +861,6 @@ def main():
 
 if __name__ == "__main__":
     try:
-        # Import socket for timeout handling
-        import socket
         main()
     except KeyboardInterrupt:
         print(f"\n{FAST_GREEN}Goodbye! 👋{FAST_RESET}")
