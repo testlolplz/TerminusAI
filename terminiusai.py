@@ -5,7 +5,7 @@
 ║                         TERMINUS AI v1.0                          ║
 ║                   Your Terminal AI Companion                      ║
 ║                                                                   ║
-║                      Created by: flint667                         ║
+║                      Created by: flint                        ║
 ║                         Discord: flint667                         ║
 ║                         GitHub: testlolplz                        ║
 ║                                                                   ║
