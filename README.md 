@@ -1,9 +1,4 @@
-# 🤖 TerminusAI - Your Terminal AI Companion
-
-[![Version](https://img.shields.io/badge/version-1.0.0-blue.svg)](https://github.com/testlolplz/TerminusAI)
-[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
-[![Termux](https://img.shields.io/badge/Termux-Compatible-orange.svg)](https://termux.com)
-[![Python](https://img.shields.io/badge/Python-3.7+-yellow.svg)](https://python.org)
+# 🤖 TerminusAI 
 
 **TerminusAI** is a powerful, feature-rich AI assistant for Termux that brings the power of Large Language Models directly to your Android terminal. **100% FREE** - No credit card required!
 
