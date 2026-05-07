@@ -1,0 +1,91 @@
+{
+    "name": "AI Coding Assistant",
+    "version": "1.0.0",
+    "description": "AI-powered coding assistant with code completion, explanation, debugging, and chat features for Acode editor",
+    "author": "TPF Team",
+    "main": "main.js",
+    "icon": "icon.png",
+    "minAcodeVersion": "1.0.0",
+    "maxAcodeVersion": "2.0.0",
+    "keywords": [
+        "ai",
+        "assistant",
+        "chatgpt",
+        "openai",
+        "gpt",
+        "code-completion",
+        "debugging",
+        "code-generation",
+        "productivity"
+    ],
+    "repository": "https://github.com/yourusername/acode-ai-assistant",
+    "license": "MIT",
+    "homepage": "https://github.com/yourusername/acode-ai-assistant",
+    "issues": "https://github.com/yourusername/acode-ai-assistant/issues",
+    "categories": ["productivity", "ai", "development"],
+    "settings": [
+        {
+            "id": "apiKey",
+            "name": "OpenAI API Key",
+            "type": "password",
+            "default": "",
+            "required": true,
+            "description": "Your OpenAI API key from platform.openai.com"
+        },
+        {
+            "id": "model",
+            "name": "AI Model",
+            "type": "select",
+            "options": [
+                "gpt-3.5-turbo",
+                "gpt-4",
+                "gpt-3.5-turbo-16k",
+                "gpt-4-turbo-preview"
+            ],
+            "default": "gpt-3.5-turbo",
+            "description": "Select which AI model to use"
+        },
+        {
+            "id": "temperature",
+            "name": "Creativity Level",
+            "type": "range",
+            "min": 0,
+            "max": 2,
+            "step": 0.1,
+            "default": 0.7,
+            "description": "Higher = more creative, Lower = more focused"
+        },
+        {
+            "id": "autoComplete",
+            "name": "Enable Auto-Complete",
+            "type": "boolean",
+            "default": true,
+            "description": "Automatically suggest code completions"
+        },
+        {
+            "id": "maxTokens",
+            "name": "Max Response Length",
+            "type": "number",
+            "min": 100,
+            "max": 4000,
+            "default": 2000,
+            "description": "Maximum tokens in AI response"
+        },
+        {
+            "id": "enableHistory",
+            "name": "Save Conversation History",
+            "type": "boolean",
+            "default": true,
+            "description": "Remember previous conversations for context"
+        }
+    ],
+    "permissions": [
+        "storage",
+        "network",
+        "clipboard"
+    ],
+    "scripts": {
+        "install": "node install.js",
+        "uninstall": "node uninstall.js"
+    }
+}
