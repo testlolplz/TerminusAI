@@ -1,0 +1,1466 @@
+// acode-ai-assistant/main.js
+// Acode Plugin: AI Coding Assistant - Complete Plugin Structure
+
+"use strict";
+
+// Plugin Metadata
+const pluginName = "AI Coding Assistant";
+const pluginVersion = "1.0.0";
+const pluginAuthor = "TPF Team";
+const pluginDescription = "AI-powered coding assistant with code completion, explanation, debugging, and chat features";
+
+// Plugin Configuration
+const CONFIG = {
+    apiEndpoint: "https://api.openai.com/v1/chat/completions", // Default, can be changed
+    apiKey: "", // User will input their API key
+    model: "gpt-3.5-turbo",
+    temperature: 0.7,
+    maxTokens: 2000,
+    theme: "dark",
+    autoComplete: true,
+    autoCompleteDelay: 500,
+    maxHistorySize: 50,
+    supportedLanguages: ["javascript", "python", "php", "html", "css", "java", "cpp", "csharp", "go", "rust", "ruby", "swift"]
+};
+
+// Main Plugin Class
+class AICodingAssistant {
+    constructor() {
+        this.editor = null;
+        this.history = [];
+        this.isEnabled = true;
+        this.autoCompleteTimeout = null;
+        this.conversationHistory = [];
+        this.uiElements = {};
+        this.customCommands = this.loadCustomCommands();
+        
+        // Initialize the plugin
+        this.init();
+    }
+    
+    async init() {
+        console.log(`[${pluginName}] Initializing v${pluginVersion}`);
+        
+        // Wait for Acode to be ready
+        if (window.acode) {
+            this.setupEditor();
+            this.createUI();
+            this.registerCommands();
+            this.loadSettings();
+            this.setupEventListeners();
+        } else {
+            // Wait for acode to load
+            window.addEventListener('acode-ready', () => {
+                this.setupEditor();
+                this.createUI();
+                this.registerCommands();
+                this.loadSettings();
+                this.setupEventListeners();
+            });
+        }
+    }
+    
+    setupEditor() {
+        // Get the active editor instance
+        this.editor = editorManager?.getActive();
+        
+        if (this.editor) {
+            this.setupAutoComplete();
+            this.addEditorListeners();
+        }
+        
+        // Listen for editor changes
+        if (editorManager) {
+            editorManager.on('active-change', (editor) => {
+                this.editor = editor;
+                this.setupAutoComplete();
+            });
+        }
+    }
+    
+    setupAutoComplete() {
+        if (!this.editor || !CONFIG.autoComplete) return;
+        
+        // Remove existing listeners to avoid duplicates
+        if (this.editor.off) {
+            this.editor.off('change', this.autoCompleteHandler);
+        }
+        
+        // Add auto-complete listener
+        this.autoCompleteHandler = this.handleAutoComplete.bind(this);
+        this.editor.on('change', this.autoCompleteHandler);
+    }
+    
+    handleAutoComplete() {
+        if (!CONFIG.autoComplete) return;
+        
+        // Clear previous timeout
+        if (this.autoCompleteTimeout) {
+            clearTimeout(this.autoCompleteTimeout);
+        }
+        
+        // Get current cursor position and line
+        const cursor = this.editor.getCursor();
+        const line = this.editor.getLine(cursor.line);
+        const currentText = line.substring(0, cursor.ch);
+        
+        // Check if we should trigger auto-complete
+        const triggerPatterns = ['.', '->', '::', '=', ' ', '(', '{', '['];
+        const lastChar = currentText.slice(-1);
+        
+        if (triggerPatterns.includes(lastChar) && currentText.length > 2) {
+            this.autoCompleteTimeout = setTimeout(() => {
+                this.getAIAutoComplete(currentText);
+            }, CONFIG.autoCompleteDelay);
+        }
+    }
+    
+    async getAIAutoComplete(currentText) {
+        try {
+            const fileType = this.getCurrentFileType();
+            const context = this.getCodeContext();
+            
+            const prompt = `Complete this ${fileType} code. Only return the completion, no explanations:\n\n${context}\n${currentText}`;
+            
+            const response = await this.callAI(prompt, {
+                maxTokens: 100,
+                temperature: 0.5
+            });
+            
+            if (response && response.trim()) {
+                this.showAutoCompleteSuggestion(response);
+            }
+        } catch (error) {
+            console.error('Auto-complete error:', error);
+        }
+    }
+    
+    showAutoCompleteSuggestion(suggestion) {
+        // Create or update suggestion widget
+        if (!this.suggestionWidget) {
+            this.suggestionWidget = document.createElement('div');
+            this.suggestionWidget.className = 'ai-suggestion-widget';
+            this.suggestionWidget.style.cssText = `
+                position: absolute;
+                background: #2d2d2d;
+                color: #a9b7c6;
+                padding: 4px 8px;
+                border-radius: 4px;
+                font-family: monospace;
+                font-size: 12px;
+                z-index: 1000;
+                opacity: 0.7;
+                cursor: pointer;
+                border-left: 3px solid #4CAF50;
+            `;
+            document.body.appendChild(this.suggestionWidget);
+        }
+        
+        // Position at cursor
+        const cursor = this.editor.getCursor();
+        const coords = this.editor.cursorCoords(cursor, 'page');
+        this.suggestionWidget.style.top = `${coords.bottom + 5}px`;
+        this.suggestionWidget.style.left = `${coords.left}px`;
+        this.suggestionWidget.textContent = suggestion.substring(0, 100);
+        this.suggestionWidget.style.display = 'block';
+        
+        // Hide after 3 seconds
+        setTimeout(() => {
+            if (this.suggestionWidget) {
+                this.suggestionWidget.style.display = 'none';
+            }
+        }, 3000);
+    }
+    
+    getCodeContext() {
+        if (!this.editor) return '';
+        
+        const cursor = this.editor.getCursor();
+        const startLine = Math.max(0, cursor.line - 20);
+        const endLine = Math.min(this.editor.lineCount() - 1, cursor.line + 10);
+        
+        let context = '';
+        for (let i = startLine; i <= endLine; i++) {
+            context += this.editor.getLine(i) + '\n';
+        }
+        
+        return context;
+    }
+    
+    getCurrentFileType() {
+        const activeFile = editorManager?.getActiveFile();
+        if (activeFile && activeFile.name) {
+            const extension = activeFile.name.split('.').pop();
+            const languageMap = {
+                'js': 'javascript', 'py': 'python', 'php': 'php',
+                'html': 'html', 'css': 'css', 'java': 'java',
+                'cpp': 'cpp', 'c': 'c', 'go': 'go', 'rs': 'rust',
+                'rb': 'ruby', 'swift': 'swift', 'json': 'json',
+                'md': 'markdown', 'xml': 'xml', 'sql': 'sql'
+            };
+            return languageMap[extension] || 'code';
+        }
+        return 'code';
+    }
+    
+    createUI() {
+        // Create plugin button in sidebar
+        this.createSidebarButton();
+        
+        // Create main chat panel
+        this.createChatPanel();
+        
+        // Create floating action button
+        this.createFAB();
+        
+        // Add status bar indicator
+        this.addStatusBarIndicator();
+    }
+    
+    createSidebarButton() {
+        // Find or create sidebar
+        let sidebar = document.querySelector('.sidebar');
+        if (!sidebar) {
+            sidebar = document.createElement('div');
+            sidebar.className = 'sidebar';
+            document.body.appendChild(sidebar);
+        }
+        
+        const aiButton = document.createElement('button');
+        aiButton.className = 'ai-sidebar-button';
+        aiButton.innerHTML = '🤖 AI';
+        aiButton.title = 'AI Coding Assistant';
+        aiButton.style.cssText = `
+            width: 40px;
+            height: 40px;
+            margin: 10px;
+            border-radius: 8px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 20px;
+            transition: transform 0.2s;
+        `;
+        
+        aiButton.addEventListener('mouseenter', () => {
+            aiButton.style.transform = 'scale(1.1)';
+        });
+        
+        aiButton.addEventListener('mouseleave', () => {
+            aiButton.style.transform = 'scale(1)';
+        });
+        
+        aiButton.addEventListener('click', () => {
+            this.toggleChatPanel();
+        });
+        
+        sidebar.appendChild(aiButton);
+        this.uiElements.sidebarButton = aiButton;
+    }
+    
+    createChatPanel() {
+        const chatPanel = document.createElement('div');
+        chatPanel.className = 'ai-chat-panel';
+        chatPanel.style.cssText = `
+            position: fixed;
+            right: -400px;
+            top: 0;
+            width: 400px;
+            height: 100vh;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            z-index: 9999;
+            transition: right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+            box-shadow: -2px 0 10px rgba(0,0,0,0.5);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        `;
+        
+        // Header
+        const header = document.createElement('div');
+        header.style.cssText = `
+            padding: 15px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        `;
+        header.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 24px;">🤖</span>
+                <span style="font-weight: bold;">AI Coding Assistant</span>
+            </div>
+            <button class="ai-close-btn" style="background: none; border: none; color: white; font-size: 20px; cursor: pointer;">✕</button>
+        `;
+        
+        // Messages container
+        const messagesContainer = document.createElement('div');
+        messagesContainer.className = 'ai-messages-container';
+        messagesContainer.style.cssText = `
+            flex: 1;
+            overflow-y: auto;
+            padding: 15px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        `;
+        
+        // Input area
+        const inputArea = document.createElement('div');
+        inputArea.style.cssText = `
+            padding: 15px;
+            border-top: 1px solid #333;
+            display: flex;
+            gap: 10px;
+        `;
+        
+        const textarea = document.createElement('textarea');
+        textarea.placeholder = 'Ask me anything about coding...';
+        textarea.style.cssText = `
+            flex: 1;
+            background: #2d2d2d;
+            border: 1px solid #444;
+            border-radius: 8px;
+            padding: 10px;
+            color: #d4d4d4;
+            font-family: monospace;
+            resize: none;
+            height: 60px;
+        `;
+        
+        const sendButton = document.createElement('button');
+        sendButton.innerHTML = 'Send';
+        sendButton.style.cssText = `
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 8px;
+            padding: 0 20px;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+        `;
+        
+        inputArea.appendChild(textarea);
+        inputArea.appendChild(sendButton);
+        
+        chatPanel.appendChild(header);
+        chatPanel.appendChild(messagesContainer);
+        chatPanel.appendChild(inputArea);
+        document.body.appendChild(chatPanel);
+        
+        this.uiElements.chatPanel = chatPanel;
+        this.uiElements.messagesContainer = messagesContainer;
+        this.uiElements.chatInput = textarea;
+        this.uiElements.sendButton = sendButton;
+        
+        // Add event listeners
+        header.querySelector('.ai-close-btn').addEventListener('click', () => {
+            this.toggleChatPanel();
+        });
+        
+        sendButton.addEventListener('click', () => {
+            this.sendChatMessage();
+        });
+        
+        textarea.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                this.sendChatMessage();
+            }
+        });
+    }
+    
+    createFAB() {
+        const fab = document.createElement('div');
+        fab.className = 'ai-floating-button';
+        fab.innerHTML = '✨';
+        fab.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            cursor: pointer;
+            z-index: 9998;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            transition: transform 0.2s;
+        `;
+        
+        fab.addEventListener('mouseenter', () => {
+            fab.style.transform = 'scale(1.1)';
+        });
+        
+        fab.addEventListener('mouseleave', () => {
+            fab.style.transform = 'scale(1)';
+        });
+        
+        fab.addEventListener('click', () => {
+            this.showQuickActions();
+        });
+        
+        document.body.appendChild(fab);
+        this.uiElements.fab = fab;
+    }
+    
+    showQuickActions() {
+        const menu = document.createElement('div');
+        menu.className = 'ai-quick-actions';
+        menu.style.cssText = `
+            position: fixed;
+            bottom: 90px;
+            right: 20px;
+            background: #2d2d2d;
+            border-radius: 12px;
+            overflow: hidden;
+            z-index: 9999;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+            min-width: 200px;
+        `;
+        
+        const actions = [
+            { icon: '💬', name: 'Chat with AI', action: () => this.toggleChatPanel() },
+            { icon: '🔍', name: 'Explain Code', action: () => this.explainSelectedCode() },
+            { icon: '🐛', name: 'Debug Code', action: () => this.debugSelectedCode() },
+            { icon: '📝', name: 'Generate Docs', action: () => this.generateDocumentation() },
+            { icon: '⚡', name: 'Optimize Code', action: () => this.optimizeCode() },
+            { icon: '🔄', name: 'Convert Language', action: () => this.convertLanguage() },
+            { icon: '🧪', name: 'Generate Tests', action: () => this.generateTests() },
+            { icon: '📊', name: 'Code Review', action: () => this.codeReview() },
+            { icon: '🎨', name: 'Explain Selection', action: () => this.explainSelection() },
+            { icon: '🔒', name: 'Security Check', action: () => this.securityCheck() }
+        ];
+        
+        actions.forEach(action => {
+            const item = document.createElement('div');
+            item.style.cssText = `
+                padding: 12px 16px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                gap: 12px;
+                transition: background 0.2s;
+            `;
+            item.innerHTML = `
+                <span style="font-size: 18px;">${action.icon}</span>
+                <span>${action.name}</span>
+            `;
+            
+            item.addEventListener('mouseenter', () => {
+                item.style.background = '#3d3d3d';
+            });
+            item.addEventListener('mouseleave', () => {
+                item.style.background = '#2d2d2d';
+            });
+            item.addEventListener('click', () => {
+                menu.remove();
+                action.action();
+            });
+            
+            menu.appendChild(item);
+        });
+        
+        document.body.appendChild(menu);
+        
+        // Close menu when clicking outside
+        setTimeout(() => {
+            document.addEventListener('click', function closeMenu(e) {
+                if (!menu.contains(e.target) && e.target !== fab) {
+                    menu.remove();
+                    document.removeEventListener('click', closeMenu);
+                }
+            });
+        }, 100);
+    }
+    
+    addStatusBarIndicator() {
+        const statusBar = document.querySelector('.status-bar');
+        if (statusBar) {
+            const indicator = document.createElement('span');
+            indicator.className = 'ai-status-indicator';
+            indicator.innerHTML = '🤖 AI Ready';
+            indicator.style.cssText = `
+                margin-left: 10px;
+                padding: 2px 8px;
+                border-radius: 12px;
+                background: #4CAF50;
+                color: white;
+                font-size: 11px;
+                cursor: pointer;
+            `;
+            indicator.addEventListener('click', () => {
+                this.toggleChatPanel();
+            });
+            statusBar.appendChild(indicator);
+        }
+    }
+    
+    toggleChatPanel() {
+        if (!this.uiElements.chatPanel) return;
+        
+        const isVisible = this.uiElements.chatPanel.style.right === '0px';
+        this.uiElements.chatPanel.style.right = isVisible ? '-400px' : '0px';
+    }
+    
+    async sendChatMessage() {
+        const message = this.uiElements.chatInput.value.trim();
+        if (!message) return;
+        
+        // Add user message to chat
+        this.addChatMessage('user', message);
+        this.uiElements.chatInput.value = '';
+        
+        // Add typing indicator
+        const typingId = this.addTypingIndicator();
+        
+        try {
+            const response = await this.callAI(message, {
+                context: this.getCodeContext(),
+                fileType: this.getCurrentFileType()
+            });
+            
+            // Remove typing indicator
+            this.removeTypingIndicator(typingId);
+            
+            // Add AI response
+            this.addChatMessage('assistant', response);
+            
+            // Save to history
+            this.saveToHistory(message, response);
+            
+        } catch (error) {
+            this.removeTypingIndicator(typingId);
+            this.addChatMessage('assistant', `Error: ${error.message}. Please check your API settings.`);
+        }
+    }
+    
+    addChatMessage(role, content) {
+        const messageDiv = document.createElement('div');
+        messageDiv.className = `ai-message ai-message-${role}`;
+        messageDiv.style.cssText = `
+            padding: 10px;
+            border-radius: 8px;
+            max-width: 85%;
+            align-self: ${role === 'user' ? 'flex-end' : 'flex-start'};
+            background: ${role === 'user' ? '#667eea' : '#2d2d2d'};
+            color: ${role === 'user' ? 'white' : '#d4d4d4'};
+            margin: 5px 0;
+            word-wrap: break-word;
+        `;
+        
+        // Format code blocks
+        let formattedContent = content;
+        formattedContent = formattedContent.replace(/```(\w+)?\n([\s\S]+?)```/g, (match, lang, code) => {
+            return `<pre style="background: #1e1e1e; padding: 10px; border-radius: 4px; overflow-x: auto; margin: 5px 0;"><code style="font-family: monospace; font-size: 12px;">${this.escapeHtml(code)}</code></pre>`;
+        });
+        
+        formattedContent = formattedContent.replace(/`([^`]+)`/g, '<code style="background: #1e1e1e; padding: 2px 4px; border-radius: 3px;">$1</code>');
+        
+        messageDiv.innerHTML = `
+            <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 5px;">
+                <span style="font-weight: bold;">${role === 'user' ? 'You' : 'AI Assistant'}</span>
+                <span style="font-size: 10px; opacity: 0.7;">${new Date().toLocaleTimeString()}</span>
+            </div>
+            <div style="line-height: 1.5;">${formattedContent}</div>
+            ${role === 'assistant' ? `
+                <div style="margin-top: 8px; display: flex; gap: 8px;">
+                    <button class="ai-action-btn" data-action="copy" style="background: none; border: none; color: #667eea; cursor: pointer; font-size: 11px;">📋 Copy</button>
+                    <button class="ai-action-btn" data-action="apply" style="background: none; border: none; color: #4CAF50; cursor: pointer; font-size: 11px;">✏️ Apply to Editor</button>
+                </div>
+            ` : ''}
+        `;
+        
+        this.uiElements.messagesContainer.appendChild(messageDiv);
+        this.uiElements.messagesContainer.scrollTop = this.uiElements.messagesContainer.scrollHeight;
+        
+        // Add action buttons
+        if (role === 'assistant') {
+            const copyBtn = messageDiv.querySelector('[data-action="copy"]');
+            const applyBtn = messageDiv.querySelector('[data-action="apply"]');
+            
+            if (copyBtn) {
+                copyBtn.addEventListener('click', () => {
+                    navigator.clipboard.writeText(content);
+                    this.showToast('Copied to clipboard!');
+                });
+            }
+            
+            if (applyBtn) {
+                applyBtn.addEventListener('click', () => {
+                    this.applyCodeToEditor(content);
+                });
+            }
+        }
+    }
+    
+    addTypingIndicator() {
+        const id = 'typing-' + Date.now();
+        const typingDiv = document.createElement('div');
+        typingDiv.id = id;
+        typingDiv.className = 'ai-typing-indicator';
+        typingDiv.style.cssText = `
+            padding: 10px;
+            border-radius: 8px;
+            background: #2d2d2d;
+            align-self: flex-start;
+            margin: 5px 0;
+        `;
+        typingDiv.innerHTML = `
+            <div style="display: flex; gap: 4px;">
+                <span style="animation: pulse 1.4s infinite;">●</span>
+                <span style="animation: pulse 1.4s infinite 0.2s;">●</span>
+                <span style="animation: pulse 1.4s infinite 0.4s;">●</span>
+            </div>
+        `;
+        
+        // Add animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes pulse {
+                0%, 60%, 100% { opacity: 0.3; }
+                30% { opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        this.uiElements.messagesContainer.appendChild(typingDiv);
+        this.uiElements.messagesContainer.scrollTop = this.uiElements.messagesContainer.scrollHeight;
+        
+        return id;
+    }
+    
+    removeTypingIndicator(id) {
+        const indicator = document.getElementById(id);
+        if (indicator) {
+            indicator.remove();
+        }
+    }
+    
+    async explainSelectedCode() {
+        const selectedCode = this.getSelectedCode();
+        if (!selectedCode) {
+            this.showToast('Please select some code first');
+            return;
+        }
+        
+        const prompt = `Explain this ${this.getCurrentFileType()} code in detail, covering what it does, how it works, and any potential issues:\n\n${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', `Explain this code:\n\`\`\`\n${selectedCode}\n\`\`\``);
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async debugSelectedCode() {
+        const selectedCode = this.getSelectedCode();
+        if (!selectedCode) {
+            this.showToast('Please select some code first');
+            return;
+        }
+        
+        const prompt = `Debug this ${this.getCurrentFileType()} code. Identify bugs, issues, and suggest fixes:\n\n${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', `Debug this code:\n\`\`\`\n${selectedCode}\n\`\`\``);
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async generateDocumentation() {
+        const selectedCode = this.getSelectedCode() || this.getCurrentFileContent();
+        if (!selectedCode) {
+            this.showToast('No code to document');
+            return;
+        }
+        
+        const prompt = `Generate comprehensive documentation for this ${this.getCurrentFileType()} code including function descriptions, parameters, return values, and usage examples:\n\n${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', 'Generate documentation for the current code');
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async optimizeCode() {
+        const selectedCode = this.getSelectedCode();
+        if (!selectedCode) {
+            this.showToast('Please select some code first');
+            return;
+        }
+        
+        const prompt = `Optimize this ${this.getCurrentFileType()} code for better performance, readability, and best practices. Show the optimized version and explain the changes:\n\n${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', `Optimize this code:\n\`\`\`\n${selectedCode}\n\`\`\``);
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async convertLanguage() {
+        const selectedCode = this.getSelectedCode();
+        if (!selectedCode) {
+            this.showToast('Please select some code first');
+            return;
+        }
+        
+        const languages = ['Python', 'JavaScript', 'Java', 'C++', 'Go', 'Rust', 'Ruby'];
+        const targetLang = await this.showLanguagePicker(languages);
+        
+        if (targetLang) {
+            const prompt = `Convert this ${this.getCurrentFileType()} code to ${targetLang}. Show both the original and converted code:\n\n${selectedCode}`;
+            
+            this.toggleChatPanel();
+            this.addChatMessage('user', `Convert to ${targetLang}:\n\`\`\`\n${selectedCode}\n\`\`\``);
+            
+            const response = await this.callAI(prompt);
+            this.addChatMessage('assistant', response);
+        }
+    }
+    
+    async generateTests() {
+        const selectedCode = this.getSelectedCode() || this.getCurrentFileContent();
+        if (!selectedCode) {
+            this.showToast('No code to generate tests for');
+            return;
+        }
+        
+        const prompt = `Generate comprehensive unit tests for this ${this.getCurrentFileType()} code using the appropriate testing framework (Jest for JS, pytest for Python, JUnit for Java, etc.). Include edge cases and error scenarios:\n\n${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', 'Generate unit tests for the current code');
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async codeReview() {
+        const selectedCode = this.getSelectedCode() || this.getCurrentFileContent();
+        if (!selectedCode) {
+            this.showToast('No code to review');
+            return;
+        }
+        
+        const prompt = `Perform a thorough code review of this ${this.getCurrentFileType()} code. Cover:
+1. Code quality and readability
+2. Potential bugs and edge cases
+3. Security vulnerabilities
+4. Performance issues
+5. Best practices violations
+6. Suggestions for improvement
+
+Code:
+${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', 'Please review my code');
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async explainSelection() {
+        const selectedCode = this.getSelectedCode();
+        if (!selectedCode) {
+            this.showToast('Please select some code first');
+            return;
+        }
+        
+        const prompt = `Explain this code as if I'm a beginner programmer. Break down what each part does and why:\n\n${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', `Explain this code simply:\n\`\`\`\n${selectedCode}\n\`\`\``);
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async securityCheck() {
+        const selectedCode = this.getSelectedCode() || this.getCurrentFileContent();
+        if (!selectedCode) {
+            this.showToast('No code to check');
+            return;
+        }
+        
+        const prompt = `Perform a security audit on this ${this.getCurrentFileType()} code. Identify:
+1. SQL injection vulnerabilities
+2. XSS vulnerabilities
+3. CSRF issues
+4. Insecure deserialization
+5. Hardcoded credentials
+6. Path traversal issues
+7. Command injection risks
+8. Best security practices violations
+
+Provide specific fixes for each issue found.
+
+Code:
+${selectedCode}`;
+        
+        this.toggleChatPanel();
+        this.addChatMessage('user', 'Perform security check on my code');
+        
+        const response = await this.callAI(prompt);
+        this.addChatMessage('assistant', response);
+    }
+    
+    async callAI(prompt, options = {}) {
+        const settings = await this.getAISettings();
+        
+        if (!settings.apiKey) {
+            throw new Error('API key not configured. Please set your API key in settings.');
+        }
+        
+        const messages = [
+            {
+                role: 'system',
+                content: `You are an expert coding assistant integrated into Acode editor. 
+You help with ${CONFIG.supportedLanguages.join(', ')} and more.
+Provide concise, accurate, and helpful responses.
+Format code with proper markdown code blocks.
+Be friendly and educational.
+Current file type: ${this.getCurrentFileType()}
+${options.context ? `Code context:\n${options.context}` : ''}`
+            },
+            ...this.conversationHistory.slice(-10),
+            { role: 'user', content: prompt }
+        ];
+        
+        const response = await fetch(CONFIG.apiEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${settings.apiKey}`
+            },
+            body: JSON.stringify({
+                model: settings.model || CONFIG.model,
+                messages: messages,
+                temperature: options.temperature || CONFIG.temperature,
+                max_tokens: options.maxTokens || CONFIG.maxTokens
+            })
+        });
+        
+        if (!response.ok) {
+            throw new Error(`API Error: ${response.status} ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        const assistantMessage = data.choices[0].message.content;
+        
+        // Save to conversation history
+        this.conversationHistory.push(
+            { role: 'user', content: prompt },
+            { role: 'assistant', content: assistantMessage }
+        );
+        
+        // Trim history if too long
+        if (this.conversationHistory.length > CONFIG.maxHistorySize * 2) {
+            this.conversationHistory = this.conversationHistory.slice(-CONFIG.maxHistorySize * 2);
+        }
+        
+        return assistantMessage;
+    }
+    
+    applyCodeToEditor(content) {
+        // Extract code blocks from response
+        const codeBlockRegex = /```(\w+)?\n([\s\S]+?)```/g;
+        let match;
+        let codeBlocks = [];
+        
+        while ((match = codeBlockRegex.exec(content)) !== null) {
+            codeBlocks.push(match[2]);
+        }
+        
+        if (codeBlocks.length > 0) {
+            // If multiple code blocks, let user choose
+            if (codeBlocks.length > 1) {
+                this.showCodeBlockPicker(codeBlocks);
+            } else {
+                this.insertCodeAtCursor(codeBlocks[0]);
+            }
+        } else {
+            this.insertCodeAtCursor(content);
+        }
+    }
+    
+    insertCodeAtCursor(code) {
+        if (!this.editor) return;
+        
+        const cursor = this.editor.getCursor();
+        this.editor.replaceRange(code, cursor);
+        this.showToast('Code inserted!');
+    }
+    
+    getSelectedCode() {
+        if (!this.editor) return '';
+        return this.editor.getSelection();
+    }
+    
+    getCurrentFileContent() {
+        if (!this.editor) return '';
+        return this.editor.getValue();
+    }
+    
+    showToast(message) {
+        // Create toast notification
+        const toast = document.createElement('div');
+        toast.className = 'ai-toast';
+        toast.textContent = message;
+        toast.style.cssText = `
+            position: fixed;
+            bottom: 80px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 8px 16px;
+            border-radius: 4px;
+            z-index: 10000;
+            font-size: 14px;
+            animation: fadeInOut 2s;
+        `;
+        
+        // Add animation
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes fadeInOut {
+                0% { opacity: 0; transform: translateX(-50%) translateY(20px); }
+                15% { opacity: 1; transform: translateX(-50%) translateY(0); }
+                85% { opacity: 1; transform: translateX(-50%) translateY(0); }
+                100% { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+            }
+        `;
+        document.head.appendChild(style);
+        
+        document.body.appendChild(toast);
+        setTimeout(() => toast.remove(), 2000);
+    }
+    
+    showLanguagePicker(languages) {
+        return new Promise((resolve) => {
+            const modal = this.createModal('Select Target Language', languages);
+            document.body.appendChild(modal);
+            
+            modal.querySelectorAll('.ai-language-option').forEach(option => {
+                option.addEventListener('click', () => {
+                    modal.remove();
+                    resolve(option.textContent);
+                });
+            });
+            
+            modal.querySelector('.ai-modal-close').addEventListener('click', () => {
+                modal.remove();
+                resolve(null);
+            });
+        });
+    }
+    
+    showCodeBlockPicker(codeBlocks) {
+        const modal = this.createModal('Select Code Block to Insert', 
+            codeBlocks.map((block, i) => `Block ${i + 1}\n${block.substring(0, 100)}...`)
+        );
+        document.body.appendChild(modal);
+        
+        modal.querySelectorAll('.ai-language-option').forEach((option, index) => {
+            option.addEventListener('click', () => {
+                modal.remove();
+                this.insertCodeAtCursor(codeBlocks[index]);
+            });
+        });
+        
+        modal.querySelector('.ai-modal-close').addEventListener('click', () => {
+            modal.remove();
+        });
+    }
+    
+    createModal(title, items) {
+        const modal = document.createElement('div');
+        modal.className = 'ai-modal';
+        modal.style.cssText = `
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 10001;
+        `;
+        
+        const content = document.createElement('div');
+        content.style.cssText = `
+            background: #2d2d2d;
+            border-radius: 12px;
+            padding: 20px;
+            min-width: 300px;
+            max-width: 500px;
+            max-height: 80vh;
+            overflow-y: auto;
+        `;
+        
+        content.innerHTML = `
+            <div style="display: flex; justify-content: space-between; margin-bottom: 15px;">
+                <h3 style="margin: 0;">${title}</h3>
+                <button class="ai-modal-close" style="background: none; border: none; color: white; font-size: 20px; cursor: pointer;">✕</button>
+            </div>
+            <div class="ai-modal-items">
+                ${items.map((item, i) => `
+                    <div class="ai-language-option" style="
+                        padding: 10px;
+                        margin: 5px 0;
+                        background: #3d3d3d;
+                        border-radius: 6px;
+                        cursor: pointer;
+                        transition: background 0.2s;
+                        white-space: pre-wrap;
+                    ">${this.escapeHtml(item)}</div>
+                `).join('')}
+            </div>
+        `;
+        
+        modal.appendChild(content);
+        return modal;
+    }
+    
+    async getAISettings() {
+        return new Promise((resolve) => {
+            // Get settings from storage
+            if (window.localStorage) {
+                const settings = {
+                    apiKey: localStorage.getItem('ai_api_key') || '',
+                    model: localStorage.getItem('ai_model') || CONFIG.model,
+                    temperature: parseFloat(localStorage.getItem('ai_temperature') || CONFIG.temperature),
+                    autoComplete: localStorage.getItem('ai_autocomplete') !== 'false'
+                };
+                resolve(settings);
+            } else {
+                resolve({
+                    apiKey: '',
+                    model: CONFIG.model,
+                    temperature: CONFIG.temperature,
+                    autoComplete: CONFIG.autoComplete
+                });
+            }
+        });
+    }
+    
+    saveSettings(settings) {
+        if (window.localStorage) {
+            localStorage.setItem('ai_api_key', settings.apiKey);
+            localStorage.setItem('ai_model', settings.model);
+            localStorage.setItem('ai_temperature', settings.temperature.toString());
+            localStorage.setItem('ai_autocomplete', settings.autoComplete.toString());
+        }
+    }
+    
+    saveToHistory(userMessage, aiResponse) {
+        this.history.unshift({
+            timestamp: Date.now(),
+            user: userMessage,
+            assistant: aiResponse
+        });
+        
+        if (this.history.length > CONFIG.maxHistorySize) {
+            this.history.pop();
+        }
+    }
+    
+    loadCustomCommands() {
+        try {
+            const commands = localStorage.getItem('ai_custom_commands');
+            return commands ? JSON.parse(commands) : [];
+        } catch {
+            return [];
+        }
+    }
+    
+    registerCommands() {
+        // Register with Acode command system
+        if (window.commandManager) {
+            window.commandManager.register({
+                id: 'ai-assistant.open',
+                name: 'Open AI Assistant',
+                execute: () => this.toggleChatPanel()
+            });
+            
+            window.commandManager.register({
+                id: 'ai-assistant.explain',
+                name: 'Explain Selected Code',
+                execute: () => this.explainSelectedCode()
+            });
+            
+            window.commandManager.register({
+                id: 'ai-assistant.debug',
+                name: 'Debug Selected Code',
+                execute: () => this.debugSelectedCode()
+            });
+            
+            window.commandManager.register({
+                id: 'ai-assistant.optimize',
+                name: 'Optimize Code',
+                execute: () => this.optimizeCode()
+            });
+        }
+    }
+    
+    loadSettings() {
+        // Load settings from storage
+        this.getAISettings().then(settings => {
+            CONFIG.autoComplete = settings.autoComplete;
+            CONFIG.model = settings.model;
+            CONFIG.temperature = settings.temperature;
+        });
+    }
+    
+    setupEventListeners() {
+        // Listen for file changes
+        if (editorManager) {
+            editorManager.on('file-open', () => {
+                this.setupEditor();
+            });
+        }
+        
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Ctrl+Shift+A to open AI assistant
+            if (e.ctrlKey && e.shiftKey && e.key === 'A') {
+                e.preventDefault();
+                this.toggleChatPanel();
+            }
+            
+            // Ctrl+Shift+E to explain selected code
+            if (e.ctrlKey && e.shiftKey && e.key === 'E') {
+                e.preventDefault();
+                this.explainSelectedCode();
+            }
+            
+            // Ctrl+Shift+D to debug
+            if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+                e.preventDefault();
+                this.debugSelectedCode();
+            }
+        });
+    }
+    
+    addEditorListeners() {
+        if (!this.editor) return;
+        
+        // Add selection change listener
+        this.editor.on('cursorActivity', () => {
+            const selected = this.editor.getSelection();
+            if (selected && this.uiElements.fab) {
+                this.uiElements.fab.style.opacity = '1';
+                this.uiElements.fab.style.transform = 'scale(1)';
+            } else if (this.uiElements.fab) {
+                this.uiElements.fab.style.opacity = '0.7';
+            }
+        });
+    }
+    
+    escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+    
+    destroy() {
+        // Clean up when plugin is disabled
+        if (this.uiElements.chatPanel) {
+            this.uiElements.chatPanel.remove();
+        }
+        if (this.uiElements.fab) {
+            this.uiElements.fab.remove();
+        }
+        if (this.uiElements.sidebarButton) {
+            this.uiElements.sidebarButton.remove();
+        }
+        if (this.suggestionWidget) {
+            this.suggestionWidget.remove();
+        }
+        
+        console.log(`[${pluginName}] Destroyed`);
+    }
+}
+
+// Plugin export for Acode
+if (window.acode) {
+    const plugin = new AICodingAssistant();
+    
+    // Export plugin
+    module.exports = {
+        name: pluginName,
+        version: pluginVersion,
+        author: pluginAuthor,
+        description: pluginDescription,
+        init: () => plugin,
+        destroy: () => plugin.destroy()
+    };
+}
+
+// Settings UI Extension
+class AISettingsUI {
+    constructor() {
+        this.container = null;
+    }
+    
+    render() {
+        this.container = document.createElement('div');
+        this.container.className = 'ai-settings-panel';
+        this.container.innerHTML = `
+            <div class="settings-section">
+                <h3>🤖 AI Coding Assistant Settings</h3>
+                
+                <div class="setting-item">
+                    <label>API Key (OpenAI)</label>
+                    <input type="password" id="ai-api-key" placeholder="sk-..." />
+                    <small>Get your API key from <a href="https://platform.openai.com/api-keys" target="_blank">OpenAI Platform</a></small>
+                </div>
+                
+                <div class="setting-item">
+                    <label>Model</label>
+                    <select id="ai-model">
+                        <option value="gpt-3.5-turbo">GPT-3.5 Turbo (Fast, Cheap)</option>
+                        <option value="gpt-4">GPT-4 (Powerful, Expensive)</option>
+                        <option value="gpt-3.5-turbo-16k">GPT-3.5 16K (Long Context)</option>
+                    </select>
+                </div>
+                
+                <div class="setting-item">
+                    <label>Temperature (Creativity)</label>
+                    <input type="range" id="ai-temperature" min="0" max="2" step="0.1" value="0.7" />
+                    <span id="temperature-value">0.7</span>
+                    <small>Lower = more focused, Higher = more creative</small>
+                </div>
+                
+                <div class="setting-item">
+                    <label>
+                        <input type="checkbox" id="ai-autocomplete" checked />
+                        Enable Auto-Complete
+                    </label>
+                </div>
+                
+                <div class="setting-item">
+                    <label>Custom Commands</label>
+                    <textarea id="ai-custom-commands" rows="5" placeholder='[{"trigger": "fix", "prompt": "Fix this code:"}]'></textarea>
+                    <small>JSON format for custom commands</small>
+                </div>
+                
+                <button id="ai-save-settings" class="btn btn-primary">Save Settings</button>
+                <button id="ai-test-connection" class="btn btn-secondary">Test Connection</button>
+            </div>
+        `;
+        
+        // Load saved settings
+        this.loadSettings();
+        
+        // Add event listeners
+        this.container.querySelector('#ai-temperature').addEventListener('input', (e) => {
+            this.container.querySelector('#temperature-value').textContent = e.target.value;
+        });
+        
+        this.container.querySelector('#ai-save-settings').addEventListener('click', () => {
+            this.saveSettings();
+        });
+        
+        this.container.querySelector('#ai-test-connection').addEventListener('click', () => {
+            this.testConnection();
+        });
+        
+        return this.container;
+    }
+    
+    loadSettings() {
+        if (localStorage) {
+            this.container.querySelector('#ai-api-key').value = localStorage.getItem('ai_api_key') || '';
+            this.container.querySelector('#ai-model').value = localStorage.getItem('ai_model') || 'gpt-3.5-turbo';
+            this.container.querySelector('#ai-temperature').value = localStorage.getItem('ai_temperature') || '0.7';
+            this.container.querySelector('#temperature-value').textContent = localStorage.getItem('ai_temperature') || '0.7';
+            this.container.querySelector('#ai-autocomplete').checked = localStorage.getItem('ai_autocomplete') !== 'false';
+            this.container.querySelector('#ai-custom-commands').value = localStorage.getItem('ai_custom_commands') || '[]';
+        }
+    }
+    
+    saveSettings() {
+        if (localStorage) {
+            localStorage.setItem('ai_api_key', this.container.querySelector('#ai-api-key').value);
+            localStorage.setItem('ai_model', this.container.querySelector('#ai-model').value);
+            localStorage.setItem('ai_temperature', this.container.querySelector('#ai-temperature').value);
+            localStorage.setItem('ai_autocomplete', this.container.querySelector('#ai-autocomplete').checked);
+            localStorage.setItem('ai_custom_commands', this.container.querySelector('#ai-custom-commands').value);
+            
+            alert('Settings saved! Restart the plugin to apply changes.');
+        }
+    }
+    
+    async testConnection() {
+        const apiKey = this.container.querySelector('#ai-api-key').value;
+        if (!apiKey) {
+            alert('Please enter an API key first');
+            return;
+        }
+        
+        const testButton = this.container.querySelector('#ai-test-connection');
+        testButton.textContent = 'Testing...';
+        testButton.disabled = true;
+        
+        try {
+            const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${apiKey}`
+                },
+                body: JSON.stringify({
+                    model: 'gpt-3.5-turbo',
+                    messages: [{ role: 'user', content: 'Say "Connection successful!"' }],
+                    max_tokens: 20
+                })
+            });
+            
+            if (response.ok) {
+                alert('✅ Connection successful! Your API key is working.');
+            } else {
+                const error = await response.json();
+                alert(`❌ Connection failed: ${error.error?.message || 'Unknown error'}`);
+            }
+        } catch (error) {
+            alert(`❌ Connection failed: ${error.message}`);
+        } finally {
+            testButton.textContent = 'Test Connection';
+            testButton.disabled = false;
+        }
+    }
+}
+
+// Add settings to Acode settings panel
+if (window.settingsApi) {
+    settingsApi.add({
+        id: 'ai-assistant',
+        name: 'AI Coding Assistant',
+        render: () => new AISettingsUI().render()
+    });
+}
+
+// CSS Styles
+const styles = `
+    .ai-suggestion-widget {
+        animation: slideIn 0.2s ease;
+    }
+    
+    @keyframes slideIn {
+        from {
+            opacity: 0;
+            transform: translateY(-10px);
+        }
+        to {
+            opacity: 0.7;
+            transform: translateY(0);
+        }
+    }
+    
+    .ai-chat-panel {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    }
+    
+    .ai-message {
+        animation: messageSlide 0.3s ease;
+    }
+    
+    @keyframes messageSlide {
+        from {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        to {
+            opacity: 1;
+            transform: translateY(0);
+        }
+    }
+    
+    .ai-action-btn:hover {
+        opacity: 0.8;
+        transform: scale(1.05);
+    }
+    
+    .ai-floating-button {
+        animation: float 2s ease-in-out infinite;
+    }
+    
+    @keyframes float {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-10px); }
+    }
+    
+    .settings-section {
+        padding: 20px;
+    }
+    
+    .setting-item {
+        margin-bottom: 20px;
+    }
+    
+    .setting-item label {
+        display: block;
+        margin-bottom: 8px;
+        font-weight: bold;
+    }
+    
+    .setting-item input[type="password"],
+    .setting-item select,
+    .setting-item textarea {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #444;
+        background: #2d2d2d;
+        color: #d4d4d4;
+        border-radius: 4px;
+    }
+    
+    .setting-item input[type="range"] {
+        width: 200px;
+        margin-right: 10px;
+    }
+    
+    .setting-item small {
+        display: block;
+        margin-top: 5px;
+        color: #888;
+        font-size: 11px;
+    }
+    
+    .btn {
+        padding: 8px 16px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        margin-right: 10px;
+    }
+    
+    .btn-primary {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+    }
+    
+    .btn-secondary {
+        background: #444;
+        color: white;
+    }
+`;
+
+// Add styles to document
+const styleSheet = document.createElement('style');
+styleSheet.textContent = styles;
+document.head.appendChild(styleSheet);
